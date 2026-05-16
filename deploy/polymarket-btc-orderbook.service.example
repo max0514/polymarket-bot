@@ -1,12 +1,12 @@
 [Unit]
-Description=Polymarket BTC 15m order book data server
+Description=Polymarket crypto 15m order book data server
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 WorkingDirectory=/opt/polymarket-bot
-ExecStart=/opt/polymarket-bot/.venv/bin/python scripts/live_btc_orderbook_data_server.py --host 0.0.0.0 --port 8765 --interval-seconds 1
+ExecStart=/opt/polymarket-bot/.venv/bin/python scripts/live_btc_orderbook_data_server.py --host 0.0.0.0 --port 8765 --symbols btc,eth,sol,doge,xrp --interval-seconds 0.25
 Restart=always
 RestartSec=5
 User=polymarket

@@ -1,4 +1,4 @@
-"""Live BTC 15-minute Up/Down Polymarket order book collector.
+"""Live crypto 15-minute Up/Down Polymarket order book collector.
 
 Polls the current market once per second and stores order book snapshots in SQLite.
 
@@ -26,10 +26,12 @@ import httpx
 GAMMA_BASE_URL = "https://gamma-api.polymarket.com"
 CLOB_BASE_URL = "https://clob.polymarket.com"
 BTC_15M_SECONDS = 15 * 60
+DEFAULT_SYMBOLS = ("btc", "eth", "sol", "doge", "xrp")
 
 
 @dataclass
 class CurrentMarket:
+    symbol: str
     slug: str
     title: str
     market_id: str
@@ -42,6 +44,10 @@ class CurrentMarket:
 
 def utc_now_ts() -> int:
     return int(time.time())
+
+
+def utc_now_ms() -> int:
+    return int(time.time() * 1000)
 
 
 def utc_iso(ts: int | None = None) -> str:
@@ -73,6 +79,7 @@ def init_db(path: Path) -> sqlite3.Connection:
         """
         CREATE TABLE IF NOT EXISTS markets (
             slug TEXT PRIMARY KEY,
+            symbol TEXT NOT NULL DEFAULT 'btc',
             title TEXT NOT NULL,
             market_id TEXT NOT NULL,
             condition_id TEXT NOT NULL,
@@ -88,10 +95,12 @@ def init_db(path: Path) -> sqlite3.Connection:
 
         CREATE TABLE IF NOT EXISTS orderbook_snapshots (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT NOT NULL DEFAULT 'btc',
             slug TEXT NOT NULL,
             token_id TEXT NOT NULL,
             outcome TEXT NOT NULL,
             collected_ts INTEGER NOT NULL,
+            collected_ms INTEGER,
             collected_utc TEXT NOT NULL,
             book_timestamp TEXT,
             book_hash TEXT,
@@ -121,19 +130,46 @@ def init_db(path: Path) -> sqlite3.Connection:
             ON orderbook_levels(snapshot_id);
         """
     )
+    ensure_column(conn, "markets", "symbol", "TEXT NOT NULL DEFAULT 'btc'")
+    ensure_column(conn, "orderbook_snapshots", "symbol", "TEXT NOT NULL DEFAULT 'btc'")
+    ensure_column(conn, "orderbook_snapshots", "collected_ms", "INTEGER")
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_orderbook_snapshots_symbol_time
+            ON orderbook_snapshots(symbol, collected_ts)
+        """
+    )
+    conn.commit()
     return conn
 
 
-def upsert_market(conn: sqlite3.Connection, market: CurrentMarket) -> None:
+def ensure_column(
+    conn: sqlite3.Connection,
+    table: str,
+    column: str,
+    definition: str,
+) -> None:
+    existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in existing:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        conn.commit()
+
+
+def upsert_market(
+    conn: sqlite3.Connection,
+    market: CurrentMarket,
+    commit: bool = True,
+) -> None:
     now = utc_now_ts()
     conn.execute(
         """
         INSERT INTO markets (
-            slug, title, market_id, condition_id, event_start_ts, event_start_utc,
+            slug, symbol, title, market_id, condition_id, event_start_ts, event_start_utc,
             end_ts, end_utc, up_token_id, down_token_id, first_seen_ts, last_seen_ts
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(slug) DO UPDATE SET
+            symbol=excluded.symbol,
             title=excluded.title,
             market_id=excluded.market_id,
             condition_id=excluded.condition_id,
@@ -147,6 +183,7 @@ def upsert_market(conn: sqlite3.Connection, market: CurrentMarket) -> None:
         """,
         (
             market.slug,
+            market.symbol,
             market.title,
             market.market_id,
             market.condition_id,
@@ -160,7 +197,8 @@ def upsert_market(conn: sqlite3.Connection, market: CurrentMarket) -> None:
             now,
         ),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def price_size(item: dict[str, Any]) -> tuple[float, float]:
@@ -181,8 +219,11 @@ def insert_book(
     token_id: str,
     outcome: str,
     book: dict[str, Any],
+    collected_ms: int | None = None,
+    commit: bool = True,
 ) -> int:
-    collected_ts = utc_now_ts()
+    collected_ms = utc_now_ms() if collected_ms is None else collected_ms
+    collected_ts = collected_ms // 1000
     best_bid, best_ask = best_bid_ask(book)
     mid_price = None
     spread = None
@@ -193,16 +234,18 @@ def insert_book(
     cursor = conn.execute(
         """
         INSERT INTO orderbook_snapshots (
-            slug, token_id, outcome, collected_ts, collected_utc, book_timestamp,
+            symbol, slug, token_id, outcome, collected_ts, collected_ms, collected_utc, book_timestamp,
             book_hash, best_bid, best_ask, mid_price, spread, last_trade_price, raw_json
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
+            market.symbol,
             market.slug,
             token_id,
             outcome,
             collected_ts,
+            collected_ms,
             utc_iso(collected_ts),
             str(book.get("timestamp") or ""),
             str(book.get("hash") or ""),
@@ -234,7 +277,8 @@ def insert_book(
         """,
         level_rows,
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     return snapshot_id
 
 
@@ -246,7 +290,7 @@ async def fetch_event(client: httpx.AsyncClient, slug: str) -> dict[str, Any] | 
     return response.json()
 
 
-def parse_current_market(event: dict[str, Any]) -> CurrentMarket | None:
+def parse_current_market(event: dict[str, Any], symbol: str) -> CurrentMarket | None:
     markets = event.get("markets") or []
     if not markets:
         return None
@@ -272,6 +316,7 @@ def parse_current_market(event: dict[str, Any]) -> CurrentMarket | None:
         return None
 
     return CurrentMarket(
+        symbol=symbol,
         slug=event.get("slug") or market.get("slug") or "",
         title=event.get("title") or market.get("question") or "",
         market_id=str(market.get("id") or ""),
@@ -283,25 +328,38 @@ def parse_current_market(event: dict[str, Any]) -> CurrentMarket | None:
     )
 
 
-async def discover_current_market(client: httpx.AsyncClient) -> CurrentMarket:
+async def discover_current_market(
+    client: httpx.AsyncClient,
+    symbol: str = "btc",
+) -> CurrentMarket:
+    symbol = symbol.lower()
     current_slot = utc_now_ts() // BTC_15M_SECONDS * BTC_15M_SECONDS
     candidate_slots = [
         current_slot + offset * BTC_15M_SECONDS
         for offset in (0, -1, 1, -2, 2, -3, 3)
     ]
     for slot in candidate_slots:
-        slug = f"btc-updown-15m-{slot}"
+        slug = f"{symbol}-updown-15m-{slot}"
         event = await fetch_event(client, slug)
         if not event:
             continue
-        market = parse_current_market(event)
+        market = parse_current_market(event, symbol)
         if market:
             return market
-    raise RuntimeError("No active BTC 15-minute Up/Down market found")
+    raise RuntimeError(f"No active {symbol.upper()} 15-minute Up/Down market found")
 
 
 async def fetch_book(client: httpx.AsyncClient, token_id: str) -> dict[str, Any]:
     response = await client.get(f"{CLOB_BASE_URL}/book", params={"token_id": token_id})
+    response.raise_for_status()
+    return response.json()
+
+
+async def fetch_books(client: httpx.AsyncClient, token_ids: list[str]) -> list[dict[str, Any]]:
+    response = await client.post(
+        f"{CLOB_BASE_URL}/books",
+        json=[{"token_id": token_id} for token_id in token_ids],
+    )
     response.raise_for_status()
     return response.json()
 
@@ -315,9 +373,13 @@ async def poll_once(
         fetch_book(client, market.up_token_id),
         fetch_book(client, market.down_token_id),
     )
-    upsert_market(conn, market)
-    insert_book(conn, market, market.up_token_id, "Up", up_book)
-    insert_book(conn, market, market.down_token_id, "Down", down_book)
+    collected_ms = utc_now_ms()
+    upsert_market(conn, market, commit=False)
+    insert_book(conn, market, market.up_token_id, "Up", up_book, collected_ms, commit=False)
+    insert_book(
+        conn, market, market.down_token_id, "Down", down_book, collected_ms, commit=False
+    )
+    conn.commit()
 
     up_bid, up_ask = best_bid_ask(up_book)
     down_bid, down_ask = best_bid_ask(down_book)
@@ -326,6 +388,51 @@ async def poll_once(
         f"Up bid/ask={up_bid}/{up_ask} Down bid/ask={down_bid}/{down_ask}",
         flush=True,
     )
+
+
+async def poll_markets_once(
+    client: httpx.AsyncClient,
+    conn: sqlite3.Connection,
+    markets: list[CurrentMarket],
+) -> None:
+    token_ids = []
+    for market in markets:
+        token_ids.append(market.up_token_id)
+        token_ids.append(market.down_token_id)
+    books = await fetch_books(client, token_ids)
+    books_by_token = {
+        str(book.get("asset_id") or book.get("token_id") or ""): book for book in books
+    }
+    collected_ms = utc_now_ms()
+
+    paired_books: list[tuple[CurrentMarket, dict[str, Any], dict[str, Any]]] = []
+    for market in markets:
+        up_book = books_by_token[market.up_token_id]
+        down_book = books_by_token[market.down_token_id]
+        paired_books.append((market, up_book, down_book))
+        upsert_market(conn, market, commit=False)
+        insert_book(
+            conn, market, market.up_token_id, "Up", up_book, collected_ms, commit=False
+        )
+        insert_book(
+            conn,
+            market,
+            market.down_token_id,
+            "Down",
+            down_book,
+            collected_ms,
+            commit=False,
+        )
+    conn.commit()
+
+    for market, up_book, down_book in paired_books:
+        up_bid, up_ask = best_bid_ask(up_book)
+        down_bid, down_ask = best_bid_ask(down_book)
+        print(
+            f"{utc_iso(collected_ms // 1000)} {market.slug} "
+            f"Up bid/ask={up_bid}/{up_ask} Down bid/ask={down_bid}/{down_ask}",
+            flush=True,
+        )
 
 
 async def run(args: argparse.Namespace) -> None:
@@ -339,24 +446,36 @@ async def run(args: argparse.Namespace) -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, handle_stop)
 
-    current_market: CurrentMarket | None = None
+    current_markets: dict[str, CurrentMarket] = {}
+    symbols = [symbol.strip().lower() for symbol in args.symbols.split(",") if symbol.strip()]
     async with httpx.AsyncClient(timeout=10.0) as client:
         while not stop.is_set():
             now = utc_now_ts()
-            if (
-                current_market is None
-                or now >= current_market.end_ts
-                or now < current_market.event_start_ts
-            ):
-                current_market = await discover_current_market(client)
-                print(
-                    f"tracking {current_market.slug} "
-                    f"{utc_iso(current_market.event_start_ts)}..{utc_iso(current_market.end_ts)}",
-                    flush=True,
-                )
+            for symbol in symbols:
+                current_market = current_markets.get(symbol)
+                if (
+                    current_market is None
+                    or now >= current_market.end_ts
+                    or now < current_market.event_start_ts
+                ):
+                    current_market = await discover_current_market(client, symbol)
+                    current_markets[symbol] = current_market
+                    print(
+                        f"tracking {current_market.symbol.upper()} {current_market.slug} "
+                        f"{utc_iso(current_market.event_start_ts)}..{utc_iso(current_market.end_ts)}",
+                        flush=True,
+                    )
 
             started = time.monotonic()
-            await poll_once(client, conn, current_market)
+            await poll_markets_once(
+                client,
+                conn,
+                [
+                    current_markets[symbol]
+                    for symbol in symbols
+                    if symbol in current_markets
+                ],
+            )
             if args.once:
                 break
             elapsed = time.monotonic() - started
@@ -373,6 +492,11 @@ def parse_args() -> argparse.Namespace:
         default=Path("data/live_orderbooks/btc_updown_orderbooks.sqlite"),
     )
     parser.add_argument("--interval-seconds", type=float, default=1.0)
+    parser.add_argument(
+        "--symbols",
+        default=",".join(DEFAULT_SYMBOLS),
+        help="Comma-separated symbols to collect, e.g. btc,eth,sol,doge,xrp.",
+    )
     parser.add_argument("--once", action="store_true")
     return parser.parse_args()
 

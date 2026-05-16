@@ -1,9 +1,19 @@
-# BTC 15m Order Book Data Server
+# Crypto 15m Order Book Data Server
 
 Run locally:
 
 ```bash
-python3 scripts/live_btc_orderbook_data_server.py --host 127.0.0.1 --port 8765
+python3 scripts/live_btc_orderbook_data_server.py \
+  --host 127.0.0.1 \
+  --port 8765 \
+  --symbols btc,eth,sol,doge,xrp \
+  --interval-seconds 0.25
+```
+
+Run the separate dashboard:
+
+```bash
+python3 scripts/web_orderbook_dashboard.py --host 127.0.0.1 --port 8767
 ```
 
 Run on a server:
@@ -12,7 +22,11 @@ Run on a server:
 python3 -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
-python scripts/live_btc_orderbook_data_server.py --host 0.0.0.0 --port 8765
+python scripts/live_btc_orderbook_data_server.py \
+  --host 0.0.0.0 \
+  --port 8765 \
+  --symbols btc,eth,sol,doge,xrp \
+  --interval-seconds 0.25
 ```
 
 Endpoints:
@@ -22,6 +36,7 @@ GET /health
 GET /api/state
 GET /api/latest
 GET /api/snapshots?limit=200
+GET /api/snapshots?symbol=eth&limit=200
 GET /api/snapshots?outcome=Up&limit=200
 GET /api/levels?snapshot_id=123
 ```
