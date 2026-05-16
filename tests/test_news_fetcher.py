@@ -4,8 +4,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from src.models import NewsArticle
-from src.news_fetcher import (
+from legacy_code.models import NewsArticle
+from legacy_code.news_fetcher import (
     _check_source_quality,
     _deduplicate,
     _ensure_utc,

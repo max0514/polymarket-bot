@@ -12,7 +12,7 @@ if REPO_ROOT not in sys.path:
 # Also set cwd to repo root for data/ directory access
 os.chdir(REPO_ROOT)
 
-from src.main import main
+from legacy_code.main import main
 
 if __name__ == "__main__":
     main()

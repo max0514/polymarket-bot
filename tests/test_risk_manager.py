@@ -5,8 +5,8 @@ from datetime import datetime
 
 import pytest
 
-from src.models import Trade
-from src.risk_manager import (
+from legacy_code.models import Trade
+from legacy_code.risk_manager import (
     DAILY_LOSS_LIMIT,
     MAX_BET_SIZE,
     MAX_TOTAL_EXPOSURE,

@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from src.backtester import (
+from legacy_code.backtester import (
     _parse_close_price,
     _parse_outcome,
     format_backtest_report,

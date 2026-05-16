@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from src.edge_calculator import (
+from legacy_code.edge_calculator import (
     MAX_BET_SIZE,
     MIN_EDGE_THRESHOLD,
     calculate_bet_size,
@@ -12,7 +12,7 @@ from src.edge_calculator import (
     calculate_kelly,
     find_opportunities,
 )
-from src.models import Market, Prediction
+from legacy_code.models import Market, Prediction
 
 
 def _make_market(market_id="m1", yes_price=0.50, volume=5000.0):

@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from src.models import Prediction, Trade
-from src.tracker import Tracker
+from legacy_code.models import Prediction, Trade
+from legacy_code.tracker import Tracker
 
 
 @pytest.fixture

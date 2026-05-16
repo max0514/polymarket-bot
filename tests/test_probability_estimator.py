@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from src.probability_estimator import _parse_response
+from legacy_code.probability_estimator import _parse_response
 
 
 class TestParseResponse:
