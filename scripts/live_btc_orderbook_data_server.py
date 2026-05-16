@@ -1,7 +1,7 @@
-"""24/7 BTC 15-minute Up/Down Polymarket order book data server.
+"""24/7 crypto 15-minute Up/Down Polymarket order book data server.
 
 This process does two jobs:
-  1. Collects the active BTC 15m Up/Down order book every second into SQLite.
+  1. Collects active crypto 15m Up/Down order books every second into SQLite.
   2. Serves JSON endpoints for downstream bots, dashboards, or research jobs.
 
 Run:
@@ -37,11 +37,13 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
+import live_btc_orderbook_collector as collector  # noqa: E402
 from live_btc_orderbook_collector import (  # noqa: E402
     CurrentMarket,
+    DEFAULT_SYMBOLS,
     discover_current_market,
     init_db,
-    poll_once,
+    poll_markets_once,
     utc_iso,
     utc_now_ts,
 )
@@ -57,14 +59,14 @@ class ServerState:
         self.started_ts = utc_now_ts()
         self.last_collected_ts: int | None = None
         self.last_error: str | None = None
-        self.current_slug: str | None = None
+        self.current_slugs: dict[str, str] = {}
         self.lock = threading.Lock()
 
     def set_collection(self, market: CurrentMarket) -> None:
         with self.lock:
             self.last_collected_ts = utc_now_ts()
             self.last_error = None
-            self.current_slug = market.slug
+            self.current_slugs[market.symbol] = market.slug
 
     def set_error(self, error: Exception) -> None:
         with self.lock:
@@ -85,7 +87,7 @@ class ServerState:
                 if last_collected_ts
                 else None,
                 "last_error": self.last_error,
-                "current_slug": self.current_slug,
+                "current_slugs": self.current_slugs,
             }
 
 
@@ -108,21 +110,28 @@ def latest_snapshots(db_path: Path) -> dict:
             WHERE id IN (
                 SELECT MAX(id)
                 FROM orderbook_snapshots
-                GROUP BY outcome
+                GROUP BY symbol, outcome
             )
-            ORDER BY outcome DESC
+            ORDER BY symbol ASC, outcome DESC
             """
         ).fetchall()
-    return {row["outcome"]: dict(row) for row in rows}
+    payload: dict[str, dict] = {}
+    for row in rows:
+        payload.setdefault(row["symbol"], {})[row["outcome"]] = dict(row)
+    return payload
 
 
 def query_snapshots(db_path: Path, params: dict[str, list[str]]) -> list[dict]:
     limit = min(1000, max(1, int(params.get("limit", ["200"])[0])))
+    symbol = params.get("symbol", [None])[0]
     slug = params.get("slug", [None])[0]
     outcome = params.get("outcome", [None])[0]
 
     clauses = []
     values: list[object] = []
+    if symbol:
+        clauses.append("symbol = ?")
+        values.append(symbol.lower())
     if slug:
         clauses.append("slug = ?")
         values.append(slug)
@@ -134,7 +143,7 @@ def query_snapshots(db_path: Path, params: dict[str, list[str]]) -> list[dict]:
     with connect(db_path) as conn:
         rows = conn.execute(
             f"""
-            SELECT id, slug, token_id, outcome, collected_ts, collected_utc,
+            SELECT id, symbol, slug, token_id, outcome, collected_ts, collected_utc,
                    best_bid, best_ask, mid_price, spread, last_trade_price
             FROM orderbook_snapshots
             {where}
@@ -186,12 +195,13 @@ class DataServerHandler(BaseHTTPRequestHandler):
             if parsed.path == "/":
                 self.send_json(
                     {
-                        "service": "Polymarket BTC 15m order book data server",
+                        "service": "Polymarket crypto 15m order book data server",
                         "endpoints": [
                             "/health",
                             "/api/state",
                             "/api/latest",
                             "/api/snapshots?limit=200",
+                            "/api/snapshots?symbol=eth&limit=200",
                             "/api/snapshots?outcome=Up&limit=200",
                             "/api/levels?snapshot_id=123",
                         ],
@@ -250,29 +260,34 @@ def start_http_server(
 
 async def collector_loop(args: argparse.Namespace, state: ServerState) -> None:
     conn = init_db(args.db)
-    current_market: CurrentMarket | None = None
+    current_markets: dict[str, CurrentMarket] = {}
+    symbols = [symbol.strip().lower() for symbol in args.symbols.split(",") if symbol.strip()]
     backoff = 1.0
 
-    async with httpx.AsyncClient(timeout=args.http_timeout) as client:
+    async with httpx.AsyncClient(timeout=args.http_timeout, verify=not args.no_verify_tls) as client:
         while True:
             try:
                 now = utc_now_ts()
-                if (
-                    current_market is None
-                    or now >= current_market.end_ts
-                    or now < current_market.event_start_ts
-                ):
-                    current_market = await discover_current_market(client)
-                    print(
-                        f"tracking {current_market.slug} "
-                        f"{utc_iso(current_market.event_start_ts)}.."
-                        f"{utc_iso(current_market.end_ts)}",
-                        flush=True,
-                    )
+                for symbol in symbols:
+                    current_market = current_markets.get(symbol)
+                    if (
+                        current_market is None
+                        or now >= current_market.end_ts
+                        or now < current_market.event_start_ts
+                    ):
+                        current_market = await discover_current_market(client, symbol)
+                        current_markets[symbol] = current_market
+                        print(
+                            f"tracking {current_market.symbol.upper()} {current_market.slug} "
+                            f"{utc_iso(current_market.event_start_ts)}.."
+                            f"{utc_iso(current_market.end_ts)}",
+                            flush=True,
+                        )
 
                 started = time.monotonic()
-                await poll_once(client, conn, current_market)
-                state.set_collection(current_market)
+                await poll_markets_once(client, conn, list(current_markets.values()))
+                for market in current_markets.values():
+                    state.set_collection(market)
                 backoff = 1.0
                 elapsed = time.monotonic() - started
                 await asyncio.sleep(max(0.0, args.interval_seconds - elapsed))
@@ -281,12 +296,14 @@ async def collector_loop(args: argparse.Namespace, state: ServerState) -> None:
             except Exception as exc:
                 state.set_error(exc)
                 print(f"collector_error {type(exc).__name__}: {exc}", flush=True)
-                current_market = None
+                current_markets = {}
                 await asyncio.sleep(backoff)
                 backoff = min(args.max_backoff_seconds, backoff * 2)
 
 
 async def run(args: argparse.Namespace) -> None:
+    collector.GAMMA_BASE_URL = args.gamma_base_url.rstrip("/")
+    collector.CLOB_BASE_URL = args.clob_base_url.rstrip("/")
     state = ServerState(args.db)
     server = start_http_server(args.host, args.port, args.db, state)
     stop = asyncio.Event()
@@ -314,8 +331,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--interval-seconds", type=float, default=1.0)
+    parser.add_argument(
+        "--symbols",
+        default=",".join(DEFAULT_SYMBOLS),
+        help="Comma-separated symbols to collect, e.g. btc,eth,sol,doge,xrp.",
+    )
     parser.add_argument("--http-timeout", type=float, default=10.0)
     parser.add_argument("--max-backoff-seconds", type=float, default=30.0)
+    parser.add_argument("--gamma-base-url", default="https://gamma-api.polymarket.com")
+    parser.add_argument("--clob-base-url", default="https://clob.polymarket.com")
+    parser.add_argument(
+        "--no-verify-tls",
+        action="store_true",
+        help="Disable TLS verification if local network/cert interception breaks API calls.",
+    )
     return parser.parse_args()
 
 
