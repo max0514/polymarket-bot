@@ -11,3 +11,4 @@ data/live_orderbooks/
 .env
 .pytest_cache/
 .venv/
+*.csv
