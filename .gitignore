@@ -12,3 +12,6 @@ data/live_orderbooks/
 .pytest_cache/
 .venv/
 *.csv
+*.parquet
+*sqlite
+*sqlite3
