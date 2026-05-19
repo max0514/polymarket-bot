@@ -4,3 +4,4 @@ pydantic>=2.0.0
 apscheduler>=3.10.0
 click>=8.0.0
 python-dotenv>=1.0.0
+websockets>=12.0

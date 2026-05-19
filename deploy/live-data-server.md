@@ -10,10 +10,37 @@ python3 scripts/live_btc_orderbook_data_server.py \
   --interval-seconds 0.25
 ```
 
+Collect Kalshi BTC 15-minute Up/Down order books with the same 0.25 second
+interval:
+
+```bash
+python3 scripts/live_kalshi_btc15_orderbook_collector.py \
+  --interval-seconds 0.25
+```
+
 Run the separate dashboard:
 
 ```bash
 python3 scripts/web_orderbook_dashboard.py --host 127.0.0.1 --port 8767
+```
+
+Run the Kalshi vs Polymarket arbitrage dashboard:
+
+```bash
+python3 scripts/arbitrage_dashboard.py --host 127.0.0.1 --port 8770
+```
+
+The dashboard applies a default 5% profit haircut for trading fees, execution
+risk, and possible Kalshi/Polymarket price-window mismatch:
+
+```bash
+python3 scripts/arbitrage_dashboard.py --profit-haircut 0.05
+```
+
+Detected arbitrage opportunities are recorded here:
+
+```text
+data/live_orderbooks/kalshi_polymarket_arbitrage.sqlite
 ```
 
 Run on a server:
@@ -38,14 +65,22 @@ GET /api/latest
 GET /api/snapshots?limit=200
 GET /api/snapshots?symbol=eth&limit=200
 GET /api/snapshots?outcome=Up&limit=200
-GET /api/levels?snapshot_id=123
+GET /api/levels?symbol=eth&snapshot_id=123
 ```
 
 SQLite output:
 
 ```text
 data/live_orderbooks/btc_updown_orderbooks.sqlite
+data/live_orderbooks/eth_updown_orderbooks.sqlite
+data/live_orderbooks/sol_updown_orderbooks.sqlite
+data/live_orderbooks/doge_updown_orderbooks.sqlite
+data/live_orderbooks/xrp_updown_orderbooks.sqlite
+data/live_orderbooks/kalshi_btc15_orderbooks.sqlite
 ```
+
+Use `--db-dir /path/to/live_orderbooks` to choose the directory for per-coin
+SQLite files. `--db /path/to/file.sqlite` is only for one-symbol runs.
 
 Systemd:
 
