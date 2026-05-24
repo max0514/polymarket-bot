@@ -40,22 +40,25 @@ if str(SCRIPT_DIR) not in sys.path:
 import live_btc_orderbook_collector as collector  # noqa: E402
 from live_btc_orderbook_collector import (  # noqa: E402
     CurrentMarket,
+    DEFAULT_DB_DIR as COLLECTOR_DEFAULT_DB_DIR,
     DEFAULT_SYMBOLS,
+    db_paths_for_symbols,
     discover_current_market,
     init_db,
-    poll_markets_once,
+    parse_symbols,
+    poll_once,
     utc_iso,
     utc_now_ts,
 )
 from live_orderbook_dashboard import load_state  # noqa: E402
 
 
-DEFAULT_DB = Path("data/live_orderbooks/btc_updown_orderbooks.sqlite")
+DEFAULT_DB_DIR = COLLECTOR_DEFAULT_DB_DIR
 
 
 class ServerState:
-    def __init__(self, db_path: Path) -> None:
-        self.db_path = db_path
+    def __init__(self, db_paths: dict[str, Path]) -> None:
+        self.db_paths = db_paths
         self.started_ts = utc_now_ts()
         self.last_collected_ts: int | None = None
         self.last_error: str | None = None
@@ -88,6 +91,7 @@ class ServerState:
                 else None,
                 "last_error": self.last_error,
                 "current_slugs": self.current_slugs,
+                "db_paths": {symbol: str(path) for symbol, path in self.db_paths.items()},
             }
 
 
@@ -101,27 +105,30 @@ def rows_to_dicts(rows: list[sqlite3.Row]) -> list[dict]:
     return [dict(row) for row in rows]
 
 
-def latest_snapshots(db_path: Path) -> dict:
-    with connect(db_path) as conn:
-        rows = conn.execute(
-            """
-            SELECT *
-            FROM orderbook_snapshots
-            WHERE id IN (
-                SELECT MAX(id)
-                FROM orderbook_snapshots
-                GROUP BY symbol, outcome
-            )
-            ORDER BY symbol ASC, outcome DESC
-            """
-        ).fetchall()
+def latest_snapshots(db_paths: dict[str, Path]) -> dict:
     payload: dict[str, dict] = {}
-    for row in rows:
-        payload.setdefault(row["symbol"], {})[row["outcome"]] = dict(row)
+    for symbol, db_path in db_paths.items():
+        if not db_path.exists():
+            continue
+        with connect(db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM orderbook_snapshots
+                WHERE id IN (
+                    SELECT MAX(id)
+                    FROM orderbook_snapshots
+                    GROUP BY symbol, outcome
+                )
+                ORDER BY symbol ASC, outcome DESC
+                """
+            ).fetchall()
+        for row in rows:
+            payload.setdefault(row["symbol"], {})[row["outcome"]] = dict(row)
     return payload
 
 
-def query_snapshots(db_path: Path, params: dict[str, list[str]]) -> list[dict]:
+def query_snapshots(db_paths: dict[str, Path], params: dict[str, list[str]]) -> list[dict]:
     limit = min(1000, max(1, int(params.get("limit", ["200"])[0])))
     symbol = params.get("symbol", [None])[0]
     slug = params.get("slug", [None])[0]
@@ -140,40 +147,59 @@ def query_snapshots(db_path: Path, params: dict[str, list[str]]) -> list[dict]:
         values.append(outcome)
     where = "WHERE " + " AND ".join(clauses) if clauses else ""
 
-    with connect(db_path) as conn:
-        rows = conn.execute(
-            f"""
-            SELECT id, symbol, slug, token_id, outcome, collected_ts, collected_utc,
-                   best_bid, best_ask, mid_price, spread, last_trade_price
-            FROM orderbook_snapshots
-            {where}
-            ORDER BY collected_ts DESC, id DESC
-            LIMIT ?
-            """,
-            (*values, limit),
-        ).fetchall()
-    return rows_to_dicts(rows)
+    paths = {symbol.lower(): db_paths[symbol.lower()]} if symbol and symbol.lower() in db_paths else db_paths
+    results: list[dict] = []
+    for db_path in paths.values():
+        if not db_path.exists():
+            continue
+        with connect(db_path) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT id, symbol, slug, token_id, outcome, collected_ts, collected_utc,
+                       best_bid, best_ask, mid_price, spread, last_trade_price
+                FROM orderbook_snapshots
+                {where}
+                ORDER BY collected_ts DESC, id DESC
+                LIMIT ?
+                """,
+                (*values, limit),
+            ).fetchall()
+        results.extend(rows_to_dicts(rows))
+    results.sort(key=lambda row: (row["collected_ts"], row["id"]), reverse=True)
+    return results[:limit]
 
 
-def query_levels(db_path: Path, params: dict[str, list[str]]) -> list[dict]:
+def query_levels(db_paths: dict[str, Path], params: dict[str, list[str]]) -> list[dict]:
     snapshot_id = int(params.get("snapshot_id", ["0"])[0])
     if snapshot_id <= 0:
         return []
-    with connect(db_path) as conn:
-        rows = conn.execute(
-            """
-            SELECT snapshot_id, side, price, size, level_index
-            FROM orderbook_levels
-            WHERE snapshot_id = ?
-            ORDER BY side, level_index
-            """,
-            (snapshot_id,),
-        ).fetchall()
-    return rows_to_dicts(rows)
+    symbol = params.get("symbol", [None])[0]
+    paths = {symbol.lower(): db_paths[symbol.lower()]} if symbol and symbol.lower() in db_paths else db_paths
+    for db_path in paths.values():
+        if not db_path.exists():
+            continue
+        with connect(db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT snapshot_id, side, price, size, level_index
+                FROM orderbook_levels
+                WHERE snapshot_id = ?
+                ORDER BY side, level_index
+                """,
+                (snapshot_id,),
+            ).fetchall()
+        if rows:
+            return rows_to_dicts(rows)
+    return []
+
+
+def load_states(db_paths: dict[str, Path]) -> dict:
+    states = {symbol: load_state(path) for symbol, path in db_paths.items()}
+    return {"symbols": states}
 
 
 class DataServerHandler(BaseHTTPRequestHandler):
-    db_path: Path
+    db_paths: dict[str, Path]
     state: ServerState
 
     def log_message(self, format: str, *args) -> None:
@@ -203,7 +229,7 @@ class DataServerHandler(BaseHTTPRequestHandler):
                             "/api/snapshots?limit=200",
                             "/api/snapshots?symbol=eth&limit=200",
                             "/api/snapshots?outcome=Up&limit=200",
-                            "/api/levels?snapshot_id=123",
+                            "/api/levels?symbol=eth&snapshot_id=123",
                         ],
                     }
                 )
@@ -216,24 +242,27 @@ class DataServerHandler(BaseHTTPRequestHandler):
                     {
                         "ok": healthy,
                         "service": service,
-                        "database_exists": self.db_path.exists(),
+                        "databases": {
+                            symbol: {"path": str(path), "exists": path.exists()}
+                            for symbol, path in self.db_paths.items()
+                        },
                     },
                     HTTPStatus.OK if healthy else HTTPStatus.SERVICE_UNAVAILABLE,
                 )
                 return
             if parsed.path == "/api/state":
-                payload = load_state(self.db_path)
+                payload = load_states(self.db_paths)
                 payload["service"] = self.state.snapshot()
                 self.send_json(payload)
                 return
             if parsed.path == "/api/latest":
-                self.send_json(latest_snapshots(self.db_path))
+                self.send_json(latest_snapshots(self.db_paths))
                 return
             if parsed.path == "/api/snapshots":
-                self.send_json(query_snapshots(self.db_path, params))
+                self.send_json(query_snapshots(self.db_paths, params))
                 return
             if parsed.path == "/api/levels":
-                self.send_json(query_levels(self.db_path, params))
+                self.send_json(query_levels(self.db_paths, params))
                 return
             self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
         except Exception as exc:
@@ -246,10 +275,10 @@ class DataServerHandler(BaseHTTPRequestHandler):
 def start_http_server(
     host: str,
     port: int,
-    db_path: Path,
+    db_paths: dict[str, Path],
     state: ServerState,
 ) -> ThreadingHTTPServer:
-    DataServerHandler.db_path = db_path
+    DataServerHandler.db_paths = db_paths
     DataServerHandler.state = state
     server = ThreadingHTTPServer((host, port), DataServerHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -259,53 +288,69 @@ def start_http_server(
 
 
 async def collector_loop(args: argparse.Namespace, state: ServerState) -> None:
-    conn = init_db(args.db)
     current_markets: dict[str, CurrentMarket] = {}
-    symbols = [symbol.strip().lower() for symbol in args.symbols.split(",") if symbol.strip()]
+    symbols = parse_symbols(args.symbols)
+    connections = {symbol: init_db(path) for symbol, path in state.db_paths.items()}
     backoff = 1.0
 
-    async with httpx.AsyncClient(timeout=args.http_timeout, verify=not args.no_verify_tls) as client:
-        while True:
-            try:
-                now = utc_now_ts()
-                for symbol in symbols:
-                    current_market = current_markets.get(symbol)
-                    if (
-                        current_market is None
-                        or now >= current_market.end_ts
-                        or now < current_market.event_start_ts
-                    ):
-                        current_market = await discover_current_market(client, symbol)
-                        current_markets[symbol] = current_market
-                        print(
-                            f"tracking {current_market.symbol.upper()} {current_market.slug} "
-                            f"{utc_iso(current_market.event_start_ts)}.."
-                            f"{utc_iso(current_market.end_ts)}",
-                            flush=True,
-                        )
+    try:
+        async with httpx.AsyncClient(timeout=args.http_timeout, verify=not args.no_verify_tls) as client:
+            while True:
+                try:
+                    now = utc_now_ts()
+                    for symbol in symbols:
+                        current_market = current_markets.get(symbol)
+                        if (
+                            current_market is None
+                            or now >= current_market.end_ts
+                            or now < current_market.event_start_ts
+                        ):
+                            current_market = await discover_current_market(client, symbol)
+                            current_markets[symbol] = current_market
+                            print(
+                                f"tracking {current_market.symbol.upper()} {current_market.slug} "
+                                f"{utc_iso(current_market.event_start_ts)}.."
+                                f"{utc_iso(current_market.end_ts)}",
+                                flush=True,
+                            )
 
-                started = time.monotonic()
-                await poll_markets_once(client, conn, list(current_markets.values()))
-                for market in current_markets.values():
-                    state.set_collection(market)
-                backoff = 1.0
-                elapsed = time.monotonic() - started
-                await asyncio.sleep(max(0.0, args.interval_seconds - elapsed))
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                state.set_error(exc)
-                print(f"collector_error {type(exc).__name__}: {exc}", flush=True)
-                current_markets = {}
-                await asyncio.sleep(backoff)
-                backoff = min(args.max_backoff_seconds, backoff * 2)
+                    started = time.monotonic()
+                    await asyncio.gather(
+                        *[
+                            poll_once(client, connections[symbol], current_markets[symbol])
+                            for symbol in symbols
+                            if symbol in current_markets
+                        ]
+                    )
+                    for market in current_markets.values():
+                        state.set_collection(market)
+                    backoff = 1.0
+                    elapsed = time.monotonic() - started
+                    await asyncio.sleep(max(0.0, args.interval_seconds - elapsed))
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    state.set_error(exc)
+                    print(f"collector_error {type(exc).__name__}: {exc}", flush=True)
+                    current_markets = {}
+                    await asyncio.sleep(backoff)
+                    backoff = min(args.max_backoff_seconds, backoff * 2)
+    finally:
+        for conn in connections.values():
+            conn.close()
 
 
 async def run(args: argparse.Namespace) -> None:
     collector.GAMMA_BASE_URL = args.gamma_base_url.rstrip("/")
     collector.CLOB_BASE_URL = args.clob_base_url.rstrip("/")
-    state = ServerState(args.db)
-    server = start_http_server(args.host, args.port, args.db, state)
+    symbols = parse_symbols(args.symbols)
+    if not symbols:
+        raise ValueError("At least one symbol is required")
+    db_paths = db_paths_for_symbols(symbols, args.db_dir, args.db)
+    state = ServerState(db_paths)
+    for symbol, path in db_paths.items():
+        print(f"writing {symbol.upper()} snapshots to {path}", flush=True)
+    server = start_http_server(args.host, args.port, db_paths, state)
     stop = asyncio.Event()
 
     def request_stop() -> None:
@@ -327,7 +372,18 @@ async def run(args: argparse.Namespace) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--db", type=Path, default=DEFAULT_DB)
+    parser.add_argument(
+        "--db",
+        type=Path,
+        default=None,
+        help="Single-symbol SQLite output path. For multiple symbols, use --db-dir.",
+    )
+    parser.add_argument(
+        "--db-dir",
+        type=Path,
+        default=DEFAULT_DB_DIR,
+        help="Directory for per-symbol SQLite files like btc_updown_orderbooks.sqlite.",
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--interval-seconds", type=float, default=1.0)

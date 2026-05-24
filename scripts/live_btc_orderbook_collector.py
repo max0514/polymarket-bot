@@ -27,6 +27,7 @@ GAMMA_BASE_URL = "https://gamma-api.polymarket.com"
 CLOB_BASE_URL = "https://clob.polymarket.com"
 BTC_15M_SECONDS = 15 * 60
 DEFAULT_SYMBOLS = ("btc", "eth", "sol", "doge", "xrp")
+DEFAULT_DB_DIR = Path("data/live_orderbooks")
 
 
 @dataclass
@@ -53,6 +54,26 @@ def utc_now_ms() -> int:
 def utc_iso(ts: int | None = None) -> str:
     value = utc_now_ts() if ts is None else ts
     return datetime.fromtimestamp(value, timezone.utc).isoformat()
+
+
+def parse_symbols(value: str) -> list[str]:
+    return [symbol.strip().lower() for symbol in value.split(",") if symbol.strip()]
+
+
+def db_path_for_symbol(symbol: str, db_dir: Path = DEFAULT_DB_DIR) -> Path:
+    return db_dir / f"{symbol.lower()}_updown_orderbooks.sqlite"
+
+
+def db_paths_for_symbols(
+    symbols: list[str],
+    db_dir: Path = DEFAULT_DB_DIR,
+    single_db: Path | None = None,
+) -> dict[str, Path]:
+    if single_db is not None:
+        if len(symbols) != 1:
+            raise ValueError("--db can only be used with exactly one symbol; use --db-dir for multi-coin collection")
+        return {symbols[0]: single_db}
+    return {symbol: db_path_for_symbol(symbol, db_dir) for symbol in symbols}
 
 
 def parse_dt(value: str | None) -> datetime | None:
@@ -436,7 +457,6 @@ async def poll_markets_once(
 
 
 async def run(args: argparse.Namespace) -> None:
-    conn = init_db(args.db)
     stop = asyncio.Event()
 
     def handle_stop() -> None:
@@ -447,41 +467,48 @@ async def run(args: argparse.Namespace) -> None:
         loop.add_signal_handler(sig, handle_stop)
 
     current_markets: dict[str, CurrentMarket] = {}
-    symbols = [symbol.strip().lower() for symbol in args.symbols.split(",") if symbol.strip()]
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        while not stop.is_set():
-            now = utc_now_ts()
-            for symbol in symbols:
-                current_market = current_markets.get(symbol)
-                if (
-                    current_market is None
-                    or now >= current_market.end_ts
-                    or now < current_market.event_start_ts
-                ):
-                    current_market = await discover_current_market(client, symbol)
-                    current_markets[symbol] = current_market
-                    print(
-                        f"tracking {current_market.symbol.upper()} {current_market.slug} "
-                        f"{utc_iso(current_market.event_start_ts)}..{utc_iso(current_market.end_ts)}",
-                        flush=True,
-                    )
+    symbols = parse_symbols(args.symbols)
+    if not symbols:
+        raise ValueError("At least one symbol is required")
+    db_paths = db_paths_for_symbols(symbols, args.db_dir, args.db)
+    connections = {symbol: init_db(path) for symbol, path in db_paths.items()}
+    for symbol, path in db_paths.items():
+        print(f"writing {symbol.upper()} snapshots to {path}", flush=True)
 
-            started = time.monotonic()
-            await poll_markets_once(
-                client,
-                conn,
-                [
-                    current_markets[symbol]
-                    for symbol in symbols
-                    if symbol in current_markets
-                ],
-            )
-            if args.once:
-                break
-            elapsed = time.monotonic() - started
-            await asyncio.sleep(max(0.0, args.interval_seconds - elapsed))
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            while not stop.is_set():
+                now = utc_now_ts()
+                for symbol in symbols:
+                    current_market = current_markets.get(symbol)
+                    if (
+                        current_market is None
+                        or now >= current_market.end_ts
+                        or now < current_market.event_start_ts
+                    ):
+                        current_market = await discover_current_market(client, symbol)
+                        current_markets[symbol] = current_market
+                        print(
+                            f"tracking {current_market.symbol.upper()} {current_market.slug} "
+                            f"{utc_iso(current_market.event_start_ts)}..{utc_iso(current_market.end_ts)}",
+                            flush=True,
+                        )
 
-    conn.close()
+                started = time.monotonic()
+                await asyncio.gather(
+                    *[
+                        poll_once(client, connections[symbol], current_markets[symbol])
+                        for symbol in symbols
+                        if symbol in current_markets
+                    ]
+                )
+                if args.once:
+                    break
+                elapsed = time.monotonic() - started
+                await asyncio.sleep(max(0.0, args.interval_seconds - elapsed))
+    finally:
+        for conn in connections.values():
+            conn.close()
 
 
 def parse_args() -> argparse.Namespace:
@@ -489,7 +516,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--db",
         type=Path,
-        default=Path("data/live_orderbooks/btc_updown_orderbooks.sqlite"),
+        default=None,
+        help="Single-symbol SQLite output path. For multiple symbols, use --db-dir.",
+    )
+    parser.add_argument(
+        "--db-dir",
+        type=Path,
+        default=DEFAULT_DB_DIR,
+        help="Directory for per-symbol SQLite files like btc_updown_orderbooks.sqlite.",
     )
     parser.add_argument("--interval-seconds", type=float, default=1.0)
     parser.add_argument(
