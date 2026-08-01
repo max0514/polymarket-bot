@@ -29,6 +29,7 @@ from arb.actions import (
     Alert,
     CancelOrder,
     EmitDecisionRecord,
+    EmitExitRecord,
     EmitSettlementRecord,
     PlaceOrder,
 )
@@ -100,6 +101,13 @@ def describe_action(action: Action) -> str:
                 f"settlement {settled.pair_id} "
                 f"realised={canonical_decimal(settled.realised_profit)} "
                 f"mismatch={'1' if settled.mismatch else '0'}"
+            )
+        case EmitExitRecord():
+            closed = action.record
+            return (
+                f"exit {closed.pair_id} {closed.trigger or '-'} "
+                f"realised={canonical_decimal(closed.realised_profit)} "
+                f"unsold={','.join(closed.legs_unsold) or '-'}"
             )
         case PlaceOrder():
             return (

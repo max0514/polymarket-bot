@@ -13,7 +13,8 @@ from typing import TYPE_CHECKING, Literal, TypeAlias
 from arb.decisions import DecisionRecord
 from arb.domain import Venue
 
-if TYPE_CHECKING:  # pragma: no cover - import cycle: settlement imports actions
+if TYPE_CHECKING:  # pragma: no cover - import cycles: both import actions
+    from arb.exits import ExitRecord
     from arb.settlement import SettlementRecord
 
 __all__ = [
@@ -21,6 +22,7 @@ __all__ = [
     "Alert",
     "CancelOrder",
     "EmitDecisionRecord",
+    "EmitExitRecord",
     "EmitSettlementRecord",
     "OrderPurpose",
     "PlaceOrder",
@@ -46,6 +48,13 @@ class EmitSettlementRecord:
     """Persist one reconciled pair, and its ground-truth label."""
 
     record: "SettlementRecord"
+
+
+@dataclass(frozen=True, slots=True)
+class EmitExitRecord:
+    """Persist one early exit and what it actually cost."""
+
+    record: "ExitRecord"
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,5 +97,10 @@ class Alert:
 
 
 Action: TypeAlias = (
-    EmitDecisionRecord | EmitSettlementRecord | PlaceOrder | CancelOrder | Alert
+    EmitDecisionRecord
+    | EmitSettlementRecord
+    | EmitExitRecord
+    | PlaceOrder
+    | CancelOrder
+    | Alert
 )

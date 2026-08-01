@@ -17,7 +17,15 @@ from dataclasses import replace
 from decimal import Decimal
 
 from arb.decisions import DecisionRecord, RejectionReason
-from arb.events import BalanceUpdate, BookUpdate, Timer, TunnelHealth
+from arb.actions import PlaceOrder
+from arb.events import (
+    BalanceUpdate,
+    BookUpdate,
+    Fill,
+    Reject,
+    Timer,
+    TunnelHealth,
+)
 from arb.reducer import step
 from arb.risk import RiskFlag, RiskLimits
 from arb.state import Position, State
@@ -287,3 +295,69 @@ class TestRiskIsOffTheHotPath:
 
         remaining = state.risk_budgets.per_source_remaining
         assert remaining["NFL official box score"] == Decimal("400")
+
+
+class TestBudgetAccountingIsExact:
+    """In-flight capital must be counted once, and released when it stops
+    being in flight.
+
+    Over-counting is not the safe direction it looks like: budgets that read
+    double the true exposure block profitable candidates for no reason, and an
+    operator who sees the system refusing obvious trades turns the budgets off.
+    """
+
+    def completed_entry(self, limit: str = "1000") -> State:
+        matched = b.pair()
+        state = b.state_with(
+            matched,
+            config_=b.config(limits=RiskLimits(max_unsettled_capital=Decimal(limit))),
+        )
+        state, _ = step(
+            state, BookUpdate(b.kalshi_book(matched, asks=(("0.05", 100),)))
+        )
+        state, actions = step(
+            state, BookUpdate(b.polymarket_book(matched, asks=(("0.90", 100),)))
+        )
+        leg_one = [a for a in actions if isinstance(a, PlaceOrder)][0]
+        state, after = step(state, Fill(leg_one.order_id, 100, Decimal("0.05"), 2_000))
+        leg_two = [a for a in after if isinstance(a, PlaceOrder)][0]
+        state, _ = step(state, Fill(leg_two.order_id, 100, Decimal("0.90"), 2_100))
+        return state
+
+    def test_a_completed_entry_is_counted_once_not_twice(self) -> None:
+        """The pending entry and the position it became are the same capital."""
+        state = self.completed_entry()
+
+        assert state.positions[0].notional == Decimal("95.00")
+        assert state.risk_budgets.unsettled_capital_remaining == Decimal("905.00")
+
+    def test_the_published_figure_does_not_need_a_timer_to_become_correct(
+        self,
+    ) -> None:
+        """Budgets are read by the very next candidate in the same book batch,
+        so a figure that only self-heals on the next Timer is wrong when it
+        matters."""
+        state = self.completed_entry()
+        published = state.risk_budgets.unsettled_capital_remaining
+
+        state, _ = step(state, Timer(9_000))
+
+        assert state.risk_budgets.unsettled_capital_remaining == published
+
+    def test_an_entry_whose_leg_one_never_filled_releases_its_budget(self) -> None:
+        matched = b.pair()
+        state = b.state_with(
+            matched,
+            config_=b.config(limits=RiskLimits(max_unsettled_capital=Decimal("1000"))),
+        )
+        state, _ = step(
+            state, BookUpdate(b.kalshi_book(matched, asks=(("0.05", 100),)))
+        )
+        state, actions = step(
+            state, BookUpdate(b.polymarket_book(matched, asks=(("0.90", 100),)))
+        )
+        leg_one = [a for a in actions if isinstance(a, PlaceOrder)][0]
+
+        state, _ = step(state, Reject(leg_one.order_id, "no liquidity", 2_000))
+
+        assert state.risk_budgets.unsettled_capital_remaining == Decimal("1000")

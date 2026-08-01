@@ -12,6 +12,7 @@ from decimal import Decimal
 from enum import Enum
 from typing import TYPE_CHECKING, Mapping
 
+from arb.actions import OrderPurpose
 from arb.config import Config
 from arb.domain import BookKey, BookSnapshot, MatchedPair, Venue, other_venue
 from arb.risk import RiskBudgets, RiskFlag, evaluate_risk
@@ -74,6 +75,20 @@ class Position:
     #: arriving after one, from selling the same position twice.
     exiting: bool = False
 
+    #: Venues whose exit order has reported, filled or refused. The position is
+    #: closed only when both have - half an exit is still a live pair, and an
+    #: unbalanced one.
+    exit_reported: frozenset[Venue] = frozenset()
+
+    #: Cash recovered from exit fills so far.
+    exit_proceeds: Decimal = Decimal("0")
+
+    #: Fees charged on the exit legs.
+    exit_fees: Decimal = Decimal("0")
+
+    #: Venues whose exit order was refused, leaving that leg still held.
+    exit_failed: frozenset[Venue] = frozenset()
+
     @property
     def notional(self) -> Decimal:
         """Capital committed across both venues - both legs are paid on entry."""
@@ -108,7 +123,7 @@ class OrderRef:
 
     pair_id: str
     venue: Venue
-    purpose: str
+    purpose: OrderPurpose
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,6 +143,8 @@ class PendingEntry:
     predicted_net_edge: Decimal
     kalshi_limit: Decimal
     polymarket_limit: Decimal
+    #: When leg 1 was placed. The only thing a timeout can be measured from.
+    opened_at_ms: int = 0
 
     first_filled_size: int = 0
     first_fill_price: Decimal = Decimal("0")

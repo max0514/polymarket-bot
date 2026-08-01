@@ -21,18 +21,21 @@ be collected for weeks with no capital at risk.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Iterable
+from typing import Iterable, MutableMapping
 
 from arb.actions import (
     Action,
     Alert,
     CancelOrder,
     EmitDecisionRecord,
+    EmitExitRecord,
     EmitSettlementRecord,
     PlaceOrder,
 )
 from arb.events import Event
+from arb.exits import ExitRecord
 from arb.reducer import step
+from arb.registry import PairCandidate, record_ground_truth
 from arb.settlement import SettlementRecord
 from arb.shell.event_log import EventLog
 from arb.shell.store import DecisionStore, OrderStore
@@ -81,6 +84,7 @@ class Runtime:
         event_log: EventLog,
         orders: OrderStore | None = None,
         gateway: OrderGateway | None = None,
+        candidates: MutableMapping[str, PairCandidate] | None = None,
     ) -> None:
         self.state = state
         self._decisions = decisions
@@ -88,7 +92,14 @@ class Runtime:
         self._event_log = event_log
         self._gateway = gateway if gateway is not None else DryRunGateway()
         self.settlements: list[SettlementRecord] = []
+        self.exits: list[ExitRecord] = []
         self.alerts: list[Alert] = []
+        #: The calibration dataset. Ground truth is written here as settlements
+        #: arrive, because a label that waits for someone to remember will not
+        #: exist when the calibration curve is finally wanted.
+        self.candidates: MutableMapping[str, PairCandidate] = (
+            {} if candidates is None else candidates
+        )
 
     @property
     def gateway(self) -> OrderGateway:
@@ -115,6 +126,9 @@ class Runtime:
             match action:
                 case EmitSettlementRecord():
                     self.settlements.append(action.record)
+                    self._label(action.record)
+                case EmitExitRecord():
+                    self.exits.append(action.record)
                 case Alert():
                     self.alerts.append(action)
                 case PlaceOrder():
@@ -125,6 +139,15 @@ class Runtime:
                     pass  # already persisted above, in one batch
 
         return actions
+
+    def _label(self, record: SettlementRecord) -> None:
+        """Write post-settlement ground truth back onto the candidate."""
+        candidate = self.candidates.get(record.pair_id)
+        if candidate is None:
+            return
+        self.candidates[record.pair_id] = record_ground_truth(
+            candidate, settled_identically=not record.mismatch
+        )
 
     def handle_all(self, events: Iterable[Event]) -> None:
         for event in events:

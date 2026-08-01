@@ -19,18 +19,70 @@ The tiers exist so that the response is proportionate to the problem:
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
+from decimal import Decimal
 
-from arb.actions import Action, Alert
-from arb.domain import VENUES
+from arb.actions import Action, Alert, EmitExitRecord
+from arb.canonical import canonical_decimal
+from arb.domain import VENUES, Venue
+from arb.legging import abandon_entry
 from arb.orders import mint_order
+from arb.pricing import FeeSchedule
 from arb.state import KillTier, Position, State
 
-__all__ = ["apply_kill_switch", "trigger_exit"]
+__all__ = [
+    "ExitRecord",
+    "apply_kill_switch",
+    "on_exit_fill",
+    "on_exit_reject",
+    "trigger_exit",
+]
+
+ONE = Decimal("1")
+ZERO = Decimal("0")
+
+
+@dataclass(frozen=True, slots=True)
+class ExitRecord:
+    """What one early exit actually cost.
+
+    An early exit realises a loss against a profit that was already locked, so
+    it has to be measured rather than assumed. Left unrecorded, the decision log
+    would show the entry's predicted edge and never the price of abandoning it.
+    """
+
+    pair_id: str
+    size: int
+    trigger: str
+    cost: Decimal
+    proceeds: Decimal
+    entry_fees: Decimal
+    exit_fees: Decimal
+    #: Venues whose exit was refused - those legs are still held.
+    legs_unsold: tuple[Venue, ...]
+    closed_at_ms: int
+
+    @property
+    def realised_profit(self) -> Decimal:
+        return self.proceeds - self.cost - self.entry_fees - self.exit_fees
+
+    def as_record(self) -> dict[str, str]:
+        return {
+            "pair_id": self.pair_id,
+            "size": str(self.size),
+            "trigger": self.trigger,
+            "cost": canonical_decimal(self.cost),
+            "proceeds": canonical_decimal(self.proceeds),
+            "entry_fees": canonical_decimal(self.entry_fees),
+            "exit_fees": canonical_decimal(self.exit_fees),
+            "realised_profit": canonical_decimal(self.realised_profit),
+            "legs_unsold": ",".join(self.legs_unsold),
+            "closed_at_ms": str(self.closed_at_ms),
+        }
 
 
 def trigger_exit(
-    state: State, pair_id: str, trigger: str, detail: str, at_ms: int
+    state: State, pair_id: str, trigger: str, detail: str
 ) -> tuple[State, tuple[Action, ...]]:
     """Flag a position and close it.
 
@@ -38,6 +90,14 @@ def trigger_exit(
     covers every pair the operator watches, not only the ones with capital
     behind them.
     """
+    # A pair mid-entry has no Position yet, but it is the most dangerous place
+    # for a trigger to land: the system is holding an unhedged binary. Abandon
+    # the entry rather than completing it into a market already known to be
+    # broken.
+    if pair_id in state.pending:
+        state, actions = abandon_entry(state, pair_id, trigger)
+        return state, actions
+
     position = state.position_for(pair_id)
     if position is None or position.exiting:
         return state, ()
@@ -56,7 +116,7 @@ def trigger_exit(
 
 
 def apply_kill_switch(
-    state: State, tier_name: str, at_ms: int
+    state: State, tier_name: str
 ) -> tuple[State, tuple[Action, ...]]:
     tier = KillTier(tier_name)
     state = replace(state, kill_tier=tier)
@@ -75,6 +135,12 @@ def apply_kill_switch(
 
     actions: list[Action] = []
     for position in targets:
+        # A position swept by a tier rather than by a trigger has no reason
+        # recorded yet. The tier is the reason, and the exit record has to say
+        # so - "why was this sold" is the first question anyone asks afterwards.
+        if not position.is_flagged:
+            position = replace(position, exit_trigger=tier.value)
+            state = _replace_position(state, position)
         state, position_actions = _exit_position(state, position)
         actions.extend(position_actions)
 
@@ -86,6 +152,86 @@ def apply_kill_switch(
             )
         )
     return state, tuple(actions)
+
+
+def on_exit_fill(
+    state: State, pair_id: str, venue: Venue, size: int, price: Decimal, at_ms: int
+) -> tuple[State, tuple[Action, ...]]:
+    """One exit leg sold. Close the position once both legs have reported."""
+    position = state.position_for(pair_id)
+    if position is None or venue in position.exit_reported:
+        return state, ()
+
+    schedule = state.config.fees_for(position.category)
+    fee = (
+        _venue_rate(schedule, venue) * price * (ONE - price) * size
+        if schedule is not None
+        else ZERO
+    )
+    position = replace(
+        position,
+        exit_reported=position.exit_reported | {venue},
+        exit_proceeds=position.exit_proceeds + price * size,
+        exit_fees=position.exit_fees + fee,
+    )
+    return _settle_exit(state, position, at_ms)
+
+
+def on_exit_reject(
+    state: State, pair_id: str, venue: Venue, at_ms: int
+) -> tuple[State, tuple[Action, ...]]:
+    """One exit leg refused. The other leg is now unhedged."""
+    position = state.position_for(pair_id)
+    if position is None or venue in position.exit_reported:
+        return state, ()
+
+    position = replace(
+        position,
+        exit_reported=position.exit_reported | {venue},
+        exit_failed=position.exit_failed | {venue},
+    )
+    state, actions = _settle_exit(state, position, at_ms)
+    return state, actions + (
+        Alert(
+            severity="critical",
+            message=(
+                f"exit refused on {venue} for {pair_id}: that leg is still held "
+                f"and is now naked"
+            ),
+            pair_id=pair_id,
+        ),
+    )
+
+
+def _settle_exit(
+    state: State, position: Position, at_ms: int
+) -> tuple[State, tuple[Action, ...]]:
+    """Book the exit once every leg has reported; otherwise just record progress."""
+    if len(position.exit_reported) < len(VENUES):
+        return _replace_position(state, position), ()
+
+    record = ExitRecord(
+        pair_id=position.pair_id,
+        size=position.size,
+        trigger=position.exit_trigger,
+        cost=position.notional,
+        proceeds=position.exit_proceeds,
+        entry_fees=position.fees_paid,
+        exit_fees=position.exit_fees,
+        legs_unsold=tuple(sorted(position.exit_failed)),
+        closed_at_ms=at_ms,
+    )
+    state = replace(
+        state,
+        positions=tuple(p for p in state.positions if p.pair_id != position.pair_id),
+    ).with_republished_risk()
+    return state, (EmitExitRecord(record),)
+
+
+def _venue_rate(schedule: FeeSchedule | None, venue: Venue) -> Decimal:
+    if schedule is None:
+        return ZERO
+    return schedule.kalshi_rate if venue == "kalshi" else schedule.polymarket_rate
 
 
 def _exit_position(state: State, position: Position) -> tuple[State, tuple[Action, ...]]:

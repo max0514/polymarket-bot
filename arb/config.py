@@ -40,6 +40,13 @@ class Config:
     #: time, before it is considered stale.
     max_book_age_ms: int = 5_000
 
+    #: How long an entry may sit unanswered before it is unwound. Unlike the
+    #: capital parameters, this one has a default: every other way out of the
+    #: exposure window needs a venue message, so with no timeout a silent venue
+    #: strands the pair permanently. Thirty seconds is generous for a taker
+    #: round trip. Zero disables the sweep.
+    entry_timeout_ms: int = 30_000
+
     #: Balance floors, concentration caps, and the Leg Failure budget. All
     #: default to no limit - the spec proposes no values because total capital
     #: was never specified.

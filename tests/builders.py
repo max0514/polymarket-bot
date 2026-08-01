@@ -31,6 +31,7 @@ def config(
     min_net_edge: Decimal = Decimal("0.002"),
     max_skew_ms: int = 2_000,
     max_book_age_ms: int = 5_000,
+    entry_timeout_ms: int = 30_000,
     limits: RiskLimits | None = None,
 ) -> Config:
     return Config(
@@ -42,6 +43,7 @@ def config(
         min_net_edge=min_net_edge,
         max_skew_ms=max_skew_ms,
         max_book_age_ms=max_book_age_ms,
+        entry_timeout_ms=entry_timeout_ms,
         risk=RiskLimits() if limits is None else limits,
     )
 

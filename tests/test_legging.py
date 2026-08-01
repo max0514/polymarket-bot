@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from arb.actions import Action, Alert, PlaceOrder
+from arb.actions import Action, Alert, CancelOrder, PlaceOrder
 from arb.events import (
     BalanceUpdate,
     BookUpdate,
@@ -21,6 +21,7 @@ from arb.events import (
     OrderAck,
     PartialFill,
     Reject,
+    Timer,
     TunnelHealth,
 )
 from arb.reducer import step
@@ -34,6 +35,10 @@ def orders(actions: tuple[Action, ...]) -> list[PlaceOrder]:
 
 def alerts(actions: tuple[Action, ...]) -> list[Alert]:
     return [a for a in actions if isinstance(a, Alert)]
+
+
+def cancels(actions: tuple[Action, ...]) -> list[CancelOrder]:
+    return [a for a in actions if isinstance(a, CancelOrder)]
 
 
 def ready(
@@ -416,3 +421,99 @@ class TestCompletedEntry:
         state, _ = step(state, Fill(second.order_id, 100, Decimal("0.90"), 2_200))
 
         assert state.pending == {}
+
+
+class TestStuckEntries:
+    """An entry the venue never answers must not strand the pair forever.
+
+    Every other path out of the exposure window is driven by a venue message.
+    If none arrives, nothing fires: the `PendingEntry` sits there holding budget
+    and `_already_committed` blocks the pair from ever being entered again. The
+    only thing that can break that is time, and time only reaches the reducer as
+    a `Timer`.
+    """
+
+    def stuck(self, timeout_ms: int = 30_000) -> tuple[State, PlaceOrder]:
+        matched = b.pair()
+        state = b.state_with(matched, config_=b.config(entry_timeout_ms=timeout_ms))
+        state, _ = step(
+            state,
+            BookUpdate(
+                b.kalshi_book(matched, asks=(("0.05", 100),), received_time_ms=1_000)
+            ),
+        )
+        state, actions = step(
+            state,
+            BookUpdate(
+                b.polymarket_book(
+                    matched, asks=(("0.90", 500),), received_time_ms=1_000
+                )
+            ),
+        )
+        first = orders(actions)[0]
+        state, after = step(state, Fill(first.order_id, 100, Decimal("0.05"), 1_100))
+        return state, orders(after)[0]
+
+    def test_a_timer_inside_the_timeout_leaves_the_entry_alone(self) -> None:
+        state, _ = self.stuck()
+
+        state, actions = step(state, Timer(20_000))
+
+        assert orders(actions) == []
+        assert b.PAIR_ID in state.pending
+
+    def test_a_timer_past_the_timeout_unwinds_the_stuck_leg(self) -> None:
+        state, _ = self.stuck()
+
+        state, actions = step(state, Timer(40_000))
+
+        unwinds = [o for o in orders(actions) if o.purpose == "unwind"]
+        assert [(o.venue, o.size) for o in unwinds] == [("kalshi", 100)]
+
+    def test_the_unanswered_order_is_cancelled(self) -> None:
+        state, outstanding = self.stuck()
+
+        _, actions = step(state, Timer(40_000))
+
+        assert [c.order_id for c in cancels(actions)] == [outstanding.order_id]
+
+    def test_a_timeout_counts_as_a_leg_failure(self) -> None:
+        """Unlike an abandoned entry, this *is* an execution failure - the venue
+        did not answer - and a systematic one should exhaust the budget."""
+        state, _ = self.stuck()
+
+        state, _ = step(state, Timer(40_000))
+
+        assert state.leg_failures == 1
+
+    def test_an_entry_with_no_fill_yet_is_simply_dropped(self) -> None:
+        matched = b.pair()
+        state = b.state_with(matched, config_=b.config(entry_timeout_ms=30_000))
+        state, _ = step(
+            state,
+            BookUpdate(
+                b.kalshi_book(matched, asks=(("0.05", 100),), received_time_ms=1_000)
+            ),
+        )
+        state, _ = step(
+            state,
+            BookUpdate(
+                b.polymarket_book(
+                    matched, asks=(("0.90", 500),), received_time_ms=1_000
+                )
+            ),
+        )
+
+        state, actions = step(state, Timer(40_000))
+
+        assert [o.purpose for o in orders(actions)] == []
+        assert b.PAIR_ID not in state.pending
+        assert state.leg_failures == 0
+
+    def test_timeouts_are_off_when_no_timeout_is_configured(self) -> None:
+        state, _ = self.stuck(timeout_ms=0)
+
+        state, actions = step(state, Timer(10_000_000))
+
+        assert orders(actions) == []
+        assert b.PAIR_ID in state.pending

@@ -54,6 +54,22 @@ COLUMNS: tuple[str, ...] = (
 
 _COLUMN_DDL = ",\n    ".join(f"{column} TEXT NOT NULL DEFAULT ''" for column in COLUMNS)
 
+_ORDER_SCHEMA = """
+CREATE TABLE IF NOT EXISTS order_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id TEXT NOT NULL,
+    pair_id TEXT NOT NULL,
+    venue TEXT NOT NULL,
+    contract_id TEXT NOT NULL,
+    side TEXT NOT NULL,
+    purpose TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    limit_price TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_orders_pair ON order_attempts(pair_id);
+CREATE INDEX IF NOT EXISTS idx_orders_order_id ON order_attempts(order_id);
+"""
+
 _SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS decision_records (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -66,26 +82,23 @@ CREATE INDEX IF NOT EXISTS idx_decisions_category ON decision_records(category);
 """
 
 
-class DecisionStore:
-    """Append-only log of evaluations.
+class _SqliteStore:
+    """Shared plumbing: one file, one schema, one connection discipline."""
 
-    Append-only on purpose: a Decision Record is an observation of what the
-    system decided at a moment, and an observation that can be edited is not
-    evidence.
-    """
+    _schema: str = ""
 
     def __init__(self, path: Path | str) -> None:
         self._path = Path(path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
-            conn.executescript(_SCHEMA)
+            conn.executescript(self._schema)
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
         """Commit on success, roll back on error, and always close.
 
         `with sqlite3.connect(...)` alone commits but never closes, which leaks
-        a handle per append - and this store is appended to on every book
+        a handle per append - and these stores are appended to on every book
         update.
         """
         conn = sqlite3.connect(self._path)
@@ -95,6 +108,17 @@ class DecisionStore:
                 yield conn
         finally:
             conn.close()
+
+
+class DecisionStore(_SqliteStore):
+    """Append-only log of evaluations.
+
+    Append-only on purpose: a Decision Record is an observation of what the
+    system decided at a moment, and an observation that can be edited is not
+    evidence.
+    """
+
+    _schema = _SCHEMA
 
     def append(self, record: DecisionRecord) -> None:
         self.append_all([record])
@@ -135,24 +159,7 @@ class DecisionStore:
             return {row["rejection_reason"]: row["n"] for row in cursor.fetchall()}
 
 
-_ORDER_SCHEMA = """
-CREATE TABLE IF NOT EXISTS order_attempts (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    order_id TEXT NOT NULL,
-    pair_id TEXT NOT NULL,
-    venue TEXT NOT NULL,
-    contract_id TEXT NOT NULL,
-    side TEXT NOT NULL,
-    purpose TEXT NOT NULL,
-    size INTEGER NOT NULL,
-    limit_price TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_orders_pair ON order_attempts(pair_id);
-CREATE INDEX IF NOT EXISTS idx_orders_order_id ON order_attempts(order_id);
-"""
-
-
-class OrderStore:
+class OrderStore(_SqliteStore):
     """Every order this system decided to send.
 
     Acknowledgements, fills and rejections arrive as events and are already in
@@ -161,21 +168,7 @@ class OrderStore:
     attempt never became a fill.
     """
 
-    def __init__(self, path: Path | str) -> None:
-        self._path = Path(path)
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as conn:
-            conn.executescript(_ORDER_SCHEMA)
-
-    @contextmanager
-    def _connect(self) -> Iterator[sqlite3.Connection]:
-        conn = sqlite3.connect(self._path)
-        conn.row_factory = sqlite3.Row
-        try:
-            with conn:
-                yield conn
-        finally:
-            conn.close()
+    _schema = _ORDER_SCHEMA
 
     def append_all(self, orders: Iterable[PlaceOrder]) -> None:
         rows = [

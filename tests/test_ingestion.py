@@ -9,11 +9,13 @@ each value where it belongs.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 
 from arb.domain import Level
-from arb.events import BookUpdate, Event, Timer
+from arb.events import BookUpdate, Event, Settlement, Timer
+from arb.registry import PairCandidate, approve, verify_candidate
 from arb.shell.event_log import EventLog
 from arb.shell.ingest import BookMessage, IngestionPipeline, RecordedSource
 from arb.shell.normalise import kalshi_snapshot, polymarket_snapshot
@@ -21,6 +23,8 @@ from arb.shell.runtime import DryRunGateway, Runtime
 from arb.shell.store import DecisionStore, OrderStore
 from arb.shell.universe import Series, SeriesFilter, classify
 from tests import builders as b
+from tests.test_kill_switch import holding
+from tests.test_registry import proposed
 
 # Shapes taken from the venues' documented order book responses, matching what
 # the existing collectors in `scripts/` already parse.
@@ -312,3 +316,51 @@ class TestRuntime:
 
         rows = DecisionStore(tmp_path / "decisions.sqlite").all()
         assert [row["rejection_reason"] for row in rows] == ["negative_net_edge"]
+
+
+class TestCalibrationFeedback:
+    """Settlement labels have to reach the Pair Registry automatically.
+
+    The calibration dataset records what the model believed before the fact. It
+    only becomes a calibration *curve* once something writes down what actually
+    happened - and a label that depends on someone remembering to call a
+    function will not be there in six months when the curve is wanted.
+    """
+
+    def runtime_holding(self, tmp_path: Path) -> tuple[Runtime, PairCandidate]:
+        candidate = approve(verify_candidate(proposed()), operator="max", at_ms=2_000)
+        state = holding()
+        runtime = Runtime(
+            state,
+            decisions=DecisionStore(tmp_path / "decisions.sqlite"),
+            event_log=EventLog(tmp_path / "events.jsonl"),
+            candidates={b.PAIR_ID: replace(candidate, pair_id=b.PAIR_ID)},
+        )
+        return runtime, candidate
+
+    def test_a_clean_settlement_labels_the_candidate(self, tmp_path: Path) -> None:
+        runtime, _ = self.runtime_holding(tmp_path)
+
+        runtime.handle(Settlement(b.PAIR_ID, "kalshi", Decimal("1"), 9_000))
+        runtime.handle(Settlement(b.PAIR_ID, "polymarket", Decimal("0"), 9_000))
+
+        assert runtime.candidates[b.PAIR_ID].settled_identically is True
+
+    def test_a_mismatched_settlement_labels_the_candidate_negatively(
+        self, tmp_path: Path
+    ) -> None:
+        runtime, _ = self.runtime_holding(tmp_path)
+
+        runtime.handle(Settlement(b.PAIR_ID, "kalshi", Decimal("0"), 9_000))
+        runtime.handle(Settlement(b.PAIR_ID, "polymarket", Decimal("0"), 9_000))
+
+        labelled = runtime.candidates[b.PAIR_ID]
+        assert labelled.settled_identically is False
+        assert labelled.as_record()["model_confidence"] == "0.90000000"
+
+    def test_a_single_leg_settling_labels_nothing_yet(self, tmp_path: Path) -> None:
+        runtime, _ = self.runtime_holding(tmp_path)
+
+        runtime.handle(Settlement(b.PAIR_ID, "kalshi", Decimal("1"), 9_000))
+
+        assert runtime.candidates[b.PAIR_ID].settled_identically is None

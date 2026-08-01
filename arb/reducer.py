@@ -30,9 +30,9 @@ from arb.events import (
     Timer,
     TunnelHealth,
 )
-from arb.exits import apply_kill_switch, trigger_exit
+from arb.exits import apply_kill_switch, on_exit_fill, on_exit_reject, trigger_exit
 from arb.inventory import rank_candidates
-from arb.legging import begin_entry, on_fill, on_reject
+from arb.legging import begin_entry, on_fill, on_reject, sweep_stuck_entries
 from arb.settlement import on_settlement
 from arb.sizing import walk
 from arb.state import KillTier, State
@@ -47,7 +47,9 @@ def step(state: State, event: Event) -> tuple[State, tuple[Action, ...]]:
         case Timer():
             # The background risk pass. It produces no Decision Records - an
             # evaluation nobody asked for would inflate the denominator.
-            return state.at_time(event.at_ms).with_republished_risk(), ()
+            return sweep_stuck_entries(
+                state.at_time(event.at_ms).with_republished_risk(), event.at_ms
+            )
         case TunnelHealth():
             return _on_tunnel_health(state, event)
         case BalanceUpdate():
@@ -57,14 +59,12 @@ def step(state: State, event: Event) -> tuple[State, tuple[Action, ...]]:
             # decide until something fills or is refused.
             return state.at_time(event.at_ms), ()
         case Fill() | PartialFill():
-            state = state.at_time(event.at_ms)
-            return on_fill(state, event.order_id, event.size, event.price, event.at_ms)
+            return _on_order_fill(state.at_time(event.at_ms), event)
         case Reject():
-            state = state.at_time(event.at_ms)
-            return on_reject(state, event.order_id)
+            return _on_order_reject(state.at_time(event.at_ms), event)
         case DisputeOpened():
             return trigger_exit(
-                state.at_time(event.at_ms), event.pair_id, "dispute_opened", "", event.at_ms
+                state.at_time(event.at_ms), event.pair_id, "dispute_opened", ""
             )
         case RuleDivergenceFound():
             return trigger_exit(
@@ -72,11 +72,10 @@ def step(state: State, event: Event) -> tuple[State, tuple[Action, ...]]:
                 event.pair_id,
                 "rule_divergence",
                 event.detail,
-                event.at_ms,
             )
         case Postponement():
             return trigger_exit(
-                state.at_time(event.at_ms), event.pair_id, "postponement", "", event.at_ms
+                state.at_time(event.at_ms), event.pair_id, "postponement", ""
             )
         case Settlement():
             return on_settlement(
@@ -87,7 +86,46 @@ def step(state: State, event: Event) -> tuple[State, tuple[Action, ...]]:
                 event.at_ms,
             )
         case KillSwitch():
-            return apply_kill_switch(state.at_time(event.at_ms), event.tier, event.at_ms)
+            return apply_kill_switch(state.at_time(event.at_ms), event.tier)
+
+
+def _on_order_fill(
+    state: State, event: Fill | PartialFill
+) -> tuple[State, tuple[Action, ...]]:
+    """Route by what the order was for.
+
+    Entry orders belong to a `PendingEntry`; exit orders belong to an open
+    `Position` and have no pending entry at all, so they need a separate path -
+    routing everything through the entry handler is how exit fills came to be
+    silently dropped.
+    """
+    ref = state.orders.get(event.order_id)
+    if ref is None:
+        return state, ()
+    if ref.purpose == "exit":
+        state = _retire(state, event.order_id)
+        return on_exit_fill(
+            state, ref.pair_id, ref.venue, event.size, event.price, event.at_ms
+        )
+    return on_fill(state, event.order_id, event.size, event.price, event.at_ms)
+
+
+def _on_order_reject(state: State, event: Reject) -> tuple[State, tuple[Action, ...]]:
+    ref = state.orders.get(event.order_id)
+    if ref is None:
+        return state, ()
+    if ref.purpose == "exit":
+        state = _retire(state, event.order_id)
+        return on_exit_reject(state, ref.pair_id, ref.venue, event.at_ms)
+    return on_reject(state, event.order_id)
+
+
+def _retire(state: State, order_id: str) -> State:
+    """Forget an order that has reported, so a duplicate event is a no-op."""
+    return replace(
+        state,
+        orders={key: value for key, value in state.orders.items() if key != order_id},
+    )
 
 
 def _on_book_update(state: State, event: BookUpdate) -> tuple[State, tuple[Action, ...]]:
@@ -115,14 +153,14 @@ def _on_book_update(state: State, event: BookUpdate) -> tuple[State, tuple[Actio
         limits=state.config.risk,
     )
     for record in accepted:
-        state, entry_actions = _enter(state, record)
+        state, entry_actions = _enter(state, record, event.at_ms)
         actions.extend(entry_actions)
 
     return state, tuple(actions)
 
 
 def _enter(
-    state: State, record: DecisionRecord
+    state: State, record: DecisionRecord, at_ms: int
 ) -> tuple[State, tuple[Action, ...]]:
     """Turn an accepted Decision Record into leg 1.
 
@@ -141,7 +179,7 @@ def _enter(
     if not sized.is_tradeable:
         return state, ()
 
-    return begin_entry(state, pair, sized)
+    return begin_entry(state, pair, sized, at_ms)
 
 
 def _already_committed(state: State, pair_id: str) -> bool:

@@ -21,7 +21,7 @@ from dataclasses import replace
 from decimal import Decimal
 from typing import Iterable
 
-from arb.actions import Action, Alert
+from arb.actions import Action, Alert, CancelOrder
 from arb.domain import BookSnapshot, Level, MatchedPair, Venue
 from arb.execution import breakeven_price, leg_difficulty
 from arb.orders import mint_order
@@ -29,13 +29,19 @@ from arb.pricing import fee_breakdown
 from arb.sizing import Sizing
 from arb.state import PendingEntry, Position, State, UnwindIncident
 
-__all__ = ["begin_entry", "on_fill", "on_reject"]
+__all__ = [
+    "abandon_entry",
+    "begin_entry",
+    "on_fill",
+    "on_reject",
+    "sweep_stuck_entries",
+]
 
 ZERO = Decimal("0")
 
 
 def begin_entry(
-    state: State, pair: MatchedPair, sized: Sizing
+    state: State, pair: MatchedPair, sized: Sizing, at_ms: int
 ) -> tuple[State, tuple[Action, ...]]:
     """Place leg 1 - the harder side - and open the pending entry."""
     kalshi = state.books[pair.key_on("kalshi")]
@@ -60,6 +66,7 @@ def begin_entry(
         predicted_net_edge=sized.expected_profit / sized.size,
         kalshi_limit=kalshi_limit,
         polymarket_limit=polymarket_limit,
+        opened_at_ms=at_ms,
     )
 
     state, order = mint_order(
@@ -128,12 +135,99 @@ def on_reject(state: State, order_id: str) -> tuple[State, tuple[Action, ...]]:
     )
 
 
+def sweep_stuck_entries(
+    state: State, at_ms: int
+) -> tuple[State, tuple[Action, ...]]:
+    """Unwind entries the venue never answered.
+
+    Driven by `Timer` because time is the only signal that can break this
+    deadlock, and time reaches the reducer only as an event. A timeout *is* an
+    execution failure - the venue did not answer - so unlike an abandoned entry
+    it counts against the Leg Failure budget.
+    """
+    timeout = state.config.entry_timeout_ms
+    if timeout <= 0:
+        return state, ()
+
+    stale = [
+        pending
+        for pair_id, pending in sorted(state.pending.items())
+        if at_ms - pending.opened_at_ms > timeout
+    ]
+
+    actions: list[Action] = []
+    for pending in stale:
+        state, timed_out = _time_out_entry(state, pending)
+        actions.extend(timed_out)
+    return state, tuple(actions)
+
+
+def _time_out_entry(
+    state: State, pending: PendingEntry
+) -> tuple[State, tuple[Action, ...]]:
+    cancels, state = _cancel_working_orders(state, pending.pair_id)
+    if pending.first_filled_size > 0:
+        state, unwind_actions = _unwind(
+            state, pending, pending.first_filled_size, "venue did not answer in time"
+        )
+        return state, cancels + unwind_actions
+    # Nothing filled, so nothing is exposed and nothing needs unwinding.
+    return _clear(state, pending.pair_id).with_republished_risk(), cancels
+
+
+def _cancel_working_orders(
+    state: State, pair_id: str
+) -> tuple[tuple[Action, ...], State]:
+    """Pull any live entry order for this pair, so the venue cannot fill it
+    into a pair the system has stopped waiting for."""
+    cancels = tuple(
+        CancelOrder(order_id=order_id, venue=ref.venue)
+        for order_id, ref in sorted(state.orders.items())
+        if ref.pair_id == pair_id and ref.purpose in ("leg1", "leg2")
+    )
+    cancelled = {cancel.order_id for cancel in cancels}
+    state = replace(
+        state,
+        orders={k: v for k, v in state.orders.items() if k not in cancelled},
+    )
+    return cancels, state
+
+
+def abandon_entry(
+    state: State, pair_id: str, reason: str
+) -> tuple[State, tuple[Action, ...]]:
+    """Stop an entry mid-flight and undo whatever it has already done.
+
+    Called when something outside execution - a dispute, a postponement, a rule
+    divergence - means the pair is no longer worth completing. Any live order is
+    cancelled so the venue cannot fill it into a pair the system has just
+    abandoned, and any leg that already filled is unwound.
+
+    This is not a Leg Failure: execution did not fail, the market did, and
+    charging it to the Leg Failure budget would halt the system for someone
+    else's problem.
+    """
+    pending = state.pending.get(pair_id)
+    if pending is None:
+        return state, ()
+
+    cancels, state = _cancel_working_orders(state, pair_id)
+
+    if pending.first_filled_size > 0:
+        state, unwind_actions = _unwind(
+            state, pending, pending.first_filled_size, reason, counts_as_failure=False
+        )
+        return state, cancels + unwind_actions
+
+    return _clear(state, pair_id).with_republished_risk(), cancels
+
+
 def _after_leg_one(
     state: State, pending: PendingEntry, size: int, price: Decimal
 ) -> tuple[State, tuple[Action, ...]]:
     """Leg 1 filled. Size leg 2 to what actually filled, bounded by breakeven."""
     if size <= 0:
-        return _clear(state, pending.pair_id), ()
+        return _clear(state, pending.pair_id).with_republished_risk(), ()
 
     pending = replace(pending, first_filled_size=size, first_fill_price=price)
     state = replace(state, pending={**state.pending, pending.pair_id: pending})
@@ -164,14 +258,19 @@ def _after_leg_two(
     matched = min(pending.first_filled_size, size)
     remainder = pending.first_filled_size - matched
 
-    state = _open_position(state, pending, matched, price, at_ms)
-
     if remainder > 0:
         # A partial leg 2 is a Leg Failure by the spec's definition, and
-        # recovery applies to the unmatched remainder only.
+        # recovery applies to the unmatched remainder only. The pending entry
+        # survives until the unwind reports, so its notional stays reserved -
+        # over-reserving while a recovery is in flight is the safe direction.
+        state = _open_position(state, pending, matched, price, at_ms)
         return _unwind(state, pending, remainder, "leg 2 filled partially")
 
-    return _clear(state, pending.pair_id), ()
+    # Pending is cleared *before* the position is published, so the two never
+    # both count. They are the same capital, and publishing it twice makes the
+    # next candidate in this same book batch read a doubled exposure.
+    state = _clear(state, pending.pair_id)
+    return _open_position(state, pending, matched, price, at_ms), ()
 
 
 def _after_unwind(
@@ -217,17 +316,32 @@ def _requote_or_unwind(
 
 
 def _unwind(
-    state: State, pending: PendingEntry, size: int, reason: str
+    state: State,
+    pending: PendingEntry,
+    size: int,
+    reason: str,
+    *,
+    counts_as_failure: bool = True,
 ) -> tuple[State, tuple[Action, ...]]:
-    """Sell leg 1 back at market and count the Leg Failure."""
+    """Sell leg 1 back at market.
+
+    `counts_as_failure` is false when the entry was abandoned for reasons
+    outside execution, so that the Leg Failure budget measures what it is named
+    for rather than absorbing every reason a pair was dropped.
+    """
     pair = state.pair_registry[pending.pair_id]
     book = state.books.get(pair.key_on(pending.first_venue))
     bid = book.best_bid if book else None
 
-    state = replace(state, leg_failures=state.leg_failures + 1)
+    if counts_as_failure:
+        state = replace(state, leg_failures=state.leg_failures + 1)
     alert = Alert(
         severity="critical",
-        message=f"leg failure on {pending.pair_id}: {reason}",
+        message=(
+            f"leg failure on {pending.pair_id}: {reason}"
+            if counts_as_failure
+            else f"entry abandoned on {pending.pair_id}: {reason}"
+        ),
         pair_id=pending.pair_id,
     )
 
