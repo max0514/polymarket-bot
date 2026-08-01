@@ -19,7 +19,14 @@ from arb.risk import RiskBudgets, RiskFlag, evaluate_risk
 if TYPE_CHECKING:  # pragma: no cover - import cycle: settlement imports state
     from arb.settlement import LegSettlement
 
-__all__ = ["KillTier", "OrderRef", "PendingEntry", "Position", "State"]
+__all__ = [
+    "KillTier",
+    "OrderRef",
+    "PendingEntry",
+    "Position",
+    "State",
+    "UnwindIncident",
+]
 
 
 class KillTier(Enum):
@@ -78,6 +85,23 @@ class Position:
 
 
 @dataclass(frozen=True, slots=True)
+class UnwindIncident:
+    """What one Leg Failure actually cost, once the unwind filled."""
+
+    pair_id: str
+    size: int
+    entry_price: Decimal
+    exit_price: Decimal
+    at_ms: int
+
+    @property
+    def cost(self) -> Decimal:
+        """Positive when the unwind lost money, which is the usual case: it
+        crosses the spread in the opposite direction to the entry."""
+        return (self.entry_price - self.exit_price) * self.size
+
+
+@dataclass(frozen=True, slots=True)
 class OrderRef:
     """What an order was for, so a fill can be routed without the shell having
     to remember."""
@@ -113,6 +137,16 @@ class PendingEntry:
     #: Leg 2 gets exactly one re-quote up to breakeven. Chasing further would
     #: turn a bounded recovery into an unbounded one.
     requoted: bool = False
+
+    @property
+    def notional(self) -> Decimal:
+        """Capital this entry commits.
+
+        Counted against the concentration budgets from the moment leg 1 is
+        placed. Both legs are paid on entry, so an entry in flight has already
+        committed its capital even though no Position exists yet.
+        """
+        return self.intended_size * (self.kalshi_limit + self.polymarket_limit)
 
     @property
     def second_venue(self) -> Venue:
@@ -152,8 +186,9 @@ class State:
     venue_healthy: Mapping[Venue, bool] = field(default_factory=dict)
     venue_latency_ms: Mapping[Venue, int] = field(default_factory=dict)
 
-    #: Cumulative realised cost of unwinding after Leg Failures.
-    unwind_cost: Decimal = Decimal("0")
+    #: One entry per Leg Failure that reached the market, so the cost of a
+    #: failure is measured per incident rather than only in aggregate.
+    unwind_incidents: tuple[UnwindIncident, ...] = ()
 
     #: Legs that have settled, per pair, while the other leg has not. Holding
     #: them here is what makes asymmetric settlement timing observable rather
@@ -192,7 +227,10 @@ class State:
         """
         flags, budgets = evaluate_risk(
             limits=self.config.risk,
-            positions=self.positions,
+            # Settled positions *and* entries in flight. Counting only the
+            # former lets a burst of candidates each pass a budget that none of
+            # them would pass together.
+            positions=(*self.positions, *self.pending.values()),
             venue_balances=self.venue_balances,
             venue_healthy=self.venue_healthy,
             leg_failures=self.leg_failures,
@@ -214,6 +252,11 @@ class State:
                 self.pair_registry[pair_id].key_on("polymarket"),
             )
         )
+
+    @property
+    def unwind_cost(self) -> Decimal:
+        """Cumulative cost of every Leg Failure so far."""
+        return sum((incident.cost for incident in self.unwind_incidents), Decimal("0"))
 
     def position_for(self, pair_id: str) -> Position | None:
         for position in self.positions:

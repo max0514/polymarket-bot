@@ -13,6 +13,7 @@ rather than being computed when a candidate shows up.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from decimal import Decimal
 
 from arb.decisions import DecisionRecord, RejectionReason
@@ -197,6 +198,43 @@ class TestConcentration:
         _, emitted = entry_attempt(state)
 
         assert "unsettled_capital_cap" in emitted[0].blocking_flags
+
+
+class TestInFlightCapital:
+    """Capital committed to a pair mid-entry counts against the budgets.
+
+    Both legs are paid on entry, so a pending entry has already committed its
+    notional. Counting only settled positions lets a burst of candidates each
+    pass a budget that none of them would pass together - which is exactly the
+    concentration the budget exists to prevent.
+    """
+
+    def test_a_pending_entry_consumes_the_source_budget(self) -> None:
+        state = healthy_state(
+            limits=RiskLimits(max_exposure_per_source=Decimal("50"))
+        )
+        second = b.pair("bbb-second")
+        state = replace(
+            state,
+            pair_registry={**state.pair_registry, second.pair_id: second},
+        )
+
+        # First candidate commits 50 * (0.05 + 0.90) = 47.50.
+        state, _ = step(state, BookUpdate(b.kalshi_book(b.pair(), asks=(("0.05", 50),))))
+        state, _ = step(
+            state, BookUpdate(b.polymarket_book(b.pair(), asks=(("0.90", 50),)))
+        )
+        assert b.PAIR_ID in state.pending
+
+        state, _ = step(state, BookUpdate(b.kalshi_book(second, asks=(("0.05", 50),))))
+        state, actions = step(
+            state, BookUpdate(b.polymarket_book(second, asks=(("0.90", 50),)))
+        )
+
+        emitted = records(actions)
+        assert emitted[0].rejection_reason is RejectionReason.RISK_BLOCKED
+        assert "source_concentration" in emitted[0].blocking_flags
+        assert second.pair_id not in state.pending
 
 
 class TestLegFailureBudget:

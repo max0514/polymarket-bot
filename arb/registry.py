@@ -33,6 +33,7 @@ __all__ = [
     "PairStatus",
     "approve",
     "propose",
+    "record_ground_truth",
     "registry_from",
     "reject",
     "revoke",
@@ -205,6 +206,19 @@ def registry_from(candidates: Iterable[PairCandidate]) -> Mapping[str, MatchedPa
     return {
         candidate.pair_id: candidate.as_matched_pair() for candidate in approved
     }
+
+
+def record_ground_truth(
+    candidate: PairCandidate, *, settled_identically: bool
+) -> PairCandidate:
+    """Attach the post-settlement label to a candidate.
+
+    The calibration dataset's only real label. Everything else in the row -
+    model confidence, rule verdict, operator decision - is an opinion recorded
+    before the fact; this is what actually happened, and without it the
+    confidence numbers can never be scored.
+    """
+    return replace(candidate, settled_identically=settled_identically)
 
 
 def _require(candidate: PairCandidate, expected: PairStatus, action: str) -> None:

@@ -61,7 +61,7 @@ def step(state: State, event: Event) -> tuple[State, tuple[Action, ...]]:
             return on_fill(state, event.order_id, event.size, event.price, event.at_ms)
         case Reject():
             state = state.at_time(event.at_ms)
-            return on_reject(state, event.order_id, event.at_ms)
+            return on_reject(state, event.order_id)
         case DisputeOpened():
             return trigger_exit(
                 state.at_time(event.at_ms), event.pair_id, "dispute_opened", "", event.at_ms
@@ -115,14 +115,14 @@ def _on_book_update(state: State, event: BookUpdate) -> tuple[State, tuple[Actio
         limits=state.config.risk,
     )
     for record in accepted:
-        state, entry_actions = _enter(state, record, event.at_ms)
+        state, entry_actions = _enter(state, record)
         actions.extend(entry_actions)
 
     return state, tuple(actions)
 
 
 def _enter(
-    state: State, record: DecisionRecord, at_ms: int
+    state: State, record: DecisionRecord
 ) -> tuple[State, tuple[Action, ...]]:
     """Turn an accepted Decision Record into leg 1.
 
@@ -141,7 +141,7 @@ def _enter(
     if not sized.is_tradeable:
         return state, ()
 
-    return begin_entry(state, pair, sized, at_ms)
+    return begin_entry(state, pair, sized)
 
 
 def _already_committed(state: State, pair_id: str) -> bool:

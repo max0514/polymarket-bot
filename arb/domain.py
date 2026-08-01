@@ -16,11 +16,16 @@ __all__ = [
     "BookSnapshot",
     "Level",
     "MatchedPair",
+    "VENUES",
     "Venue",
     "other_venue",
 ]
 
 Venue: TypeAlias = Literal["kalshi", "polymarket"]
+
+#: Both venues, in a fixed order. Iteration order reaches the action trace, so
+#: it lives here once rather than being re-declared per module.
+VENUES: tuple[Venue, ...] = ("kalshi", "polymarket")
 
 #: Books are keyed by venue and contract, not by instrument file, so that
 #: cross-pair analysis is a query rather than a join across files.

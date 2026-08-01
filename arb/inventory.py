@@ -27,7 +27,7 @@ from decimal import Decimal
 from typing import Iterable, Mapping, Sequence
 
 from arb.decisions import DecisionRecord
-from arb.domain import Venue
+from arb.domain import VENUES, Venue
 from arb.risk import RiskLimits
 
 __all__ = ["rank_candidates", "replenishment_probability"]
@@ -96,8 +96,6 @@ def _is_steering(
         return False
     return any(
         venue_balances.get(venue, ZERO) < limits.steering_balance_band
-        for venue in _VENUES
+        for venue in VENUES
     )
 
-
-_VENUES: tuple[Venue, ...] = ("kalshi", "polymarket")

@@ -21,13 +21,12 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from arb.actions import Action, Alert, PlaceOrder
-from arb.domain import Venue
-from arb.state import KillTier, OrderRef, Position, State
+from arb.actions import Action, Alert
+from arb.domain import VENUES
+from arb.orders import mint_order
+from arb.state import KillTier, Position, State
 
 __all__ = ["apply_kill_switch", "trigger_exit"]
-
-_VENUES: tuple[Venue, ...] = ("kalshi", "polymarket")
 
 
 def trigger_exit(
@@ -101,7 +100,7 @@ def _exit_position(state: State, position: Position) -> tuple[State, tuple[Actio
         return state, ()
 
     orders: list[Action] = []
-    for venue in _VENUES:
+    for venue in VENUES:
         book = state.books.get(pair.key_on(venue))
         bid = book.best_bid if book else None
         if bid is None:
@@ -114,30 +113,16 @@ def _exit_position(state: State, position: Position) -> tuple[State, tuple[Actio
             )
             continue
 
-        sequence = state.order_sequence + 1
-        order_id = f"{position.pair_id}:exit:{sequence}"
-        orders.append(
-            PlaceOrder(
-                order_id=order_id,
-                pair_id=position.pair_id,
-                venue=venue,
-                contract_id=pair.contract_on(venue),
-                side="sell",
-                size=position.size,
-                limit_price=bid.price,
-                purpose="exit",
-            )
-        )
-        state = replace(
+        state, order = mint_order(
             state,
-            order_sequence=sequence,
-            orders={
-                **state.orders,
-                order_id: OrderRef(
-                    pair_id=position.pair_id, venue=venue, purpose="exit"
-                ),
-            },
+            pair=pair,
+            venue=venue,
+            side="sell",
+            size=position.size,
+            limit_price=bid.price,
+            purpose="exit",
         )
+        orders.append(order)
 
     state = _replace_position(state, replace(position, exiting=True))
     return state, tuple(orders)

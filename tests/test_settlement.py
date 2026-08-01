@@ -20,11 +20,13 @@ from decimal import Decimal
 from arb.actions import Action, Alert, EmitSettlementRecord
 from arb.events import Settlement
 from arb.reducer import step
+from arb.registry import record_ground_truth
 from arb.settlement import SettlementRecord
 from arb.state import State
 from tests import builders as b
 from tests.test_kill_switch import holding
 from tests.test_legging import alerts
+from tests.test_registry import approved
 
 
 def settlements(actions: tuple[Action, ...]) -> list[SettlementRecord]:
@@ -159,3 +161,39 @@ class TestGroundTruthForCalibration:
         assert row["predicted_profit"] == "4.21750000"
         assert row["model_error"] == "0.00000000"
         assert row["mismatch"] == "0"
+
+
+class TestGroundTruthReachesTheRegistry:
+    """The label has to get back to the calibration dataset.
+
+    `SettlementRecord` knows whether the legs agreed; `PairCandidate` is where
+    that has to land, next to the model confidence it scores. Without this step
+    the confidence column is an opinion nothing ever grades.
+    """
+
+    def test_a_clean_settlement_labels_the_candidate(self) -> None:
+        _, actions = settle(holding(), kalshi="1", polymarket="0")
+        record = settlements(actions)[0]
+
+        labelled = record_ground_truth(
+            approved(), settled_identically=not record.mismatch
+        )
+
+        assert labelled.settled_identically is True
+        assert labelled.as_record()["settled_identically"] == "1"
+
+    def test_a_mismatch_labels_the_candidate_negatively(self) -> None:
+        _, actions = settle(holding(), kalshi="0", polymarket="0")
+        record = settlements(actions)[0]
+
+        labelled = record_ground_truth(
+            approved(), settled_identically=not record.mismatch
+        )
+
+        assert labelled.settled_identically is False
+
+    def test_the_label_sits_beside_the_confidence_it_scores(self) -> None:
+        row = record_ground_truth(approved(), settled_identically=False).as_record()
+
+        assert row["model_confidence"] == "0.90000000"
+        assert row["settled_identically"] == "0"

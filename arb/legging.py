@@ -21,12 +21,13 @@ from dataclasses import replace
 from decimal import Decimal
 from typing import Iterable
 
-from arb.actions import Action, Alert, PlaceOrder
-from arb.domain import BookSnapshot, MatchedPair, Venue
+from arb.actions import Action, Alert
+from arb.domain import BookSnapshot, Level, MatchedPair, Venue
 from arb.execution import breakeven_price, leg_difficulty
+from arb.orders import mint_order
 from arb.pricing import fee_breakdown
 from arb.sizing import Sizing
-from arb.state import OrderRef, PendingEntry, Position, State
+from arb.state import PendingEntry, Position, State, UnwindIncident
 
 __all__ = ["begin_entry", "on_fill", "on_reject"]
 
@@ -34,7 +35,7 @@ ZERO = Decimal("0")
 
 
 def begin_entry(
-    state: State, pair: MatchedPair, sized: Sizing, at_ms: int
+    state: State, pair: MatchedPair, sized: Sizing
 ) -> tuple[State, tuple[Action, ...]]:
     """Place leg 1 - the harder side - and open the pending entry."""
     kalshi = state.books[pair.key_on("kalshi")]
@@ -61,7 +62,7 @@ def begin_entry(
         polymarket_limit=polymarket_limit,
     )
 
-    state, order = _place(
+    state, order = mint_order(
         state,
         pair=pair,
         venue=first_venue,
@@ -70,7 +71,11 @@ def begin_entry(
         limit_price=pending.price_on(first_venue),
         purpose="leg1",
     )
-    return replace(state, pending={**state.pending, pair.pair_id: pending}), (order,)
+    # Republished immediately: the pair's notional is committed the moment
+    # leg 1 is placed, so it must consume the concentration budgets before the
+    # next candidate is evaluated against them.
+    state = replace(state, pending={**state.pending, pair.pair_id: pending})
+    return state.with_republished_risk(), (order,)
 
 
 def on_fill(
@@ -83,33 +88,35 @@ def on_fill(
     pending = state.pending.get(ref.pair_id)
     if pending is None:
         return state, ()
+    state = _forget_order(state, order_id)
 
     match ref.purpose:
         case "leg1":
-            return _after_leg_one(state, pending, size, price, at_ms)
+            return _after_leg_one(state, pending, size, price)
         case "leg2":
             return _after_leg_two(state, pending, size, price, at_ms)
         case "unwind":
-            return _after_unwind(state, pending, size, price)
+            return _after_unwind(state, pending, size, price, at_ms)
         case _:
             return state, ()
 
 
-def on_reject(state: State, order_id: str, at_ms: int) -> tuple[State, tuple[Action, ...]]:
+def on_reject(state: State, order_id: str) -> tuple[State, tuple[Action, ...]]:
     ref = state.orders.get(order_id)
     if ref is None:
         return state, ()
     pending = state.pending.get(ref.pair_id)
     if pending is None:
         return state, ()
+    state = _forget_order(state, order_id)
 
     if ref.purpose == "leg1":
         # Nothing filled, so nothing is exposed. Not a Leg Failure - counting
         # it would exhaust the budget on non-events.
-        return _clear(state, pending.pair_id), ()
+        return _clear(state, pending.pair_id).with_republished_risk(), ()
 
     if ref.purpose == "leg2":
-        return _requote_or_unwind(state, pending, at_ms)
+        return _requote_or_unwind(state, pending)
 
     # An unwind that itself gets rejected is beyond what this ladder can fix.
     return _clear(state, pending.pair_id), (
@@ -122,7 +129,7 @@ def on_reject(state: State, order_id: str, at_ms: int) -> tuple[State, tuple[Act
 
 
 def _after_leg_one(
-    state: State, pending: PendingEntry, size: int, price: Decimal, at_ms: int
+    state: State, pending: PendingEntry, size: int, price: Decimal
 ) -> tuple[State, tuple[Action, ...]]:
     """Leg 1 filled. Size leg 2 to what actually filled, bounded by breakeven."""
     if size <= 0:
@@ -136,7 +143,7 @@ def _after_leg_one(
         return _unwind(state, pending, size, "no price leaves the pair profitable")
 
     pair = state.pair_registry[pending.pair_id]
-    state, order = _place(
+    state, order = mint_order(
         state,
         pair=pair,
         venue=pending.second_venue,
@@ -168,16 +175,22 @@ def _after_leg_two(
 
 
 def _after_unwind(
-    state: State, pending: PendingEntry, size: int, price: Decimal
+    state: State, pending: PendingEntry, size: int, price: Decimal, at_ms: int
 ) -> tuple[State, tuple[Action, ...]]:
     """Record what the Leg Failure actually cost, rather than assuming it."""
-    cost = (pending.first_fill_price - price) * size
-    state = replace(state, unwind_cost=state.unwind_cost + cost)
-    return _clear(state, pending.pair_id), ()
+    incident = UnwindIncident(
+        pair_id=pending.pair_id,
+        size=size,
+        entry_price=pending.first_fill_price,
+        exit_price=price,
+        at_ms=at_ms,
+    )
+    state = replace(state, unwind_incidents=state.unwind_incidents + (incident,))
+    return _clear(state, pending.pair_id).with_republished_risk(), ()
 
 
 def _requote_or_unwind(
-    state: State, pending: PendingEntry, at_ms: int
+    state: State, pending: PendingEntry
 ) -> tuple[State, tuple[Action, ...]]:
     """One re-quote up to breakeven, then unwind."""
     breakeven = _breakeven_for(state, pending)
@@ -187,7 +200,7 @@ def _requote_or_unwind(
         pending = replace(pending, requoted=True)
         state = replace(state, pending={**state.pending, pending.pair_id: pending})
         pair = state.pair_registry[pending.pair_id]
-        state, order = _place(
+        state, order = mint_order(
             state,
             pair=pair,
             venue=pending.second_venue,
@@ -230,7 +243,7 @@ def _unwind(
             ),
         )
 
-    state, order = _place(
+    state, order = mint_order(
         state,
         pair=pair,
         venue=pending.first_venue,
@@ -326,51 +339,32 @@ def _harder_leg(
     return "kalshi" if kalshi_score >= polymarket_score else "polymarket"
 
 
-def _depth_within(levels: Iterable[object], limit: Decimal) -> int:
+def _depth_within(levels: Iterable[Level], limit: Decimal) -> int:
     """Contracts available at or better than the limit price."""
     total = 0
     for level in levels:
-        price = getattr(level, "price")
-        if price > limit:
+        if level.price > limit:
             break
-        total += getattr(level, "size")
+        total += level.size
     return total
 
 
-def _place(
-    state: State,
-    *,
-    pair: MatchedPair,
-    venue: Venue,
-    side: str,
-    size: int,
-    limit_price: Decimal,
-    purpose: str,
-) -> tuple[State, PlaceOrder]:
-    """Mint an order id from state, never from a clock or a random source."""
-    sequence = state.order_sequence + 1
-    order_id = f"{pair.pair_id}:{purpose}:{sequence}"
-    order = PlaceOrder(
-        order_id=order_id,
-        pair_id=pair.pair_id,
-        venue=venue,
-        contract_id=pair.contract_on(venue),
-        side=side,  # type: ignore[arg-type]
-        size=size,
-        limit_price=limit_price,
-        purpose=purpose,  # type: ignore[arg-type]
-    )
-    state = replace(
-        state,
-        order_sequence=sequence,
-        orders={
-            **state.orders,
-            order_id: OrderRef(pair_id=pair.pair_id, venue=venue, purpose=purpose),
-        },
-    )
-    return state, order
 
 
 def _clear(state: State, pair_id: str) -> State:
+    """Drop a pending entry, freeing the budget its notional was consuming."""
     pending = {key: value for key, value in state.pending.items() if key != pair_id}
     return replace(state, pending=pending)
+
+
+def _forget_order(state: State, order_id: str) -> State:
+    """Retire an order that has reported its outcome.
+
+    Fills, partial fills and rejections are all terminal, so a second event for
+    the same order is a duplicate. Forgetting the id makes the duplicate a
+    no-op instead of a second leg 2 and a second Position.
+    """
+    return replace(
+        state,
+        orders={key: value for key, value in state.orders.items() if key != order_id},
+    )

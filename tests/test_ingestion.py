@@ -18,7 +18,7 @@ from arb.shell.event_log import EventLog
 from arb.shell.ingest import BookMessage, IngestionPipeline, RecordedSource
 from arb.shell.normalise import kalshi_snapshot, polymarket_snapshot
 from arb.shell.runtime import DryRunGateway, Runtime
-from arb.shell.store import DecisionStore
+from arb.shell.store import DecisionStore, OrderStore
 from arb.shell.universe import Series, SeriesFilter, classify
 from tests import builders as b
 
@@ -214,7 +214,23 @@ class TestRuntime:
             b.state_with(b.pair()),
             decisions=DecisionStore(tmp_path / "decisions.sqlite"),
             event_log=EventLog(tmp_path / "events.jsonl"),
+            orders=OrderStore(tmp_path / "orders.sqlite"),
         )
+
+    def test_every_order_attempt_is_persisted(self, tmp_path: Path) -> None:
+        """User story 42: realised execution has to be reconcilable against
+        intent, including intent that never became a fill."""
+        runtime = self.make(tmp_path)
+        matched = b.pair()
+
+        runtime.handle(BookUpdate(b.kalshi_book(matched, asks=(("0.05", 100),))))
+        runtime.handle(BookUpdate(b.polymarket_book(matched, asks=(("0.90", 100),))))
+
+        rows = OrderStore(tmp_path / "orders.sqlite").all()
+        assert [(row["purpose"], row["venue"], row["size"]) for row in rows] == [
+            ("leg1", "kalshi", 100)
+        ]
+        assert rows[0]["limit_price"] == "0.05000000"
 
     def test_orders_are_not_sent_by_default(self, tmp_path: Path) -> None:
         """The default gateway records intent and sends nothing. Weeks of

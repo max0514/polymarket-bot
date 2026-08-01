@@ -267,6 +267,55 @@ def unwinding() -> tuple[State, tuple[Action, ...]]:
     return step(state, Reject(second.order_id, "no liquidity", 2_200))
 
 
+class TestTerminalEvents:
+    """An order reports its outcome exactly once.
+
+    A taker order that partially fills is finished - the remainder never
+    happened - so `Fill`, `PartialFill` and `Reject` are all terminal. Venues do
+    stream incremental fill messages, and aggregating those into one terminal
+    event is the shell's job; the core refuses to guess which it is being sent.
+
+    Without that, a second message for the same order is silently destructive:
+    it overwrites the recorded fill size, places a second leg 2, and ends with
+    two positions for one pair.
+    """
+
+    def test_a_second_terminal_event_for_one_order_is_ignored(self) -> None:
+        state, actions = ready(kalshi_depth=100, polymarket_depth=500)
+        first = orders(actions)[0]
+
+        state, after = step(
+            state, PartialFill(first.order_id, 40, Decimal("0.05"), 2_100)
+        )
+        state, duplicate = step(
+            state, PartialFill(first.order_id, 60, Decimal("0.05"), 2_200)
+        )
+
+        assert [o.size for o in orders(after)] == [40]
+        assert orders(duplicate) == []
+        assert state.pending[b.PAIR_ID].first_filled_size == 40
+
+    def test_a_duplicate_event_cannot_create_a_second_position(self) -> None:
+        state, after, _ = leg_one_filled()
+        second = orders(after)[0]
+
+        state, _ = step(state, Fill(second.order_id, 100, Decimal("0.90"), 2_200))
+        state, again = step(state, Fill(second.order_id, 100, Decimal("0.90"), 2_300))
+
+        assert len(state.positions) == 1
+        assert again == ()
+
+    def test_a_fill_arriving_after_a_reject_is_ignored(self) -> None:
+        state, after, _ = leg_one_filled(price="0.12")
+        second = orders(after)[0]
+        state, _ = step(state, Reject(second.order_id, "no liquidity", 2_200))
+
+        state, late = step(state, Fill(second.order_id, 100, Decimal("0.90"), 2_300))
+
+        assert late == ()
+        assert state.position_for(b.PAIR_ID) is None
+
+
 class TestLegFailure:
     def test_a_rejected_leg_two_unwinds_leg_one_at_market(self) -> None:
         """User story 39: the worst case is bounded at a spread crossing plus
@@ -316,6 +365,24 @@ class TestLegFailure:
 
         # Bought 100 at 0.12, sold back into the 0.09 bid.
         assert state.unwind_cost == Decimal("3.00")
+
+    def test_each_unwind_is_recorded_as_its_own_incident(self) -> None:
+        """User story 43 asks for cost *per incident*. A running total cannot
+        distinguish one expensive failure from ten cheap ones, and those call
+        for different responses."""
+        state, recovery = unwinding()
+        unwind = orders(recovery)[0]
+
+        state, _ = step(state, Fill(unwind.order_id, 100, Decimal("0.09"), 2_300))
+
+        assert len(state.unwind_incidents) == 1
+        incident = state.unwind_incidents[0]
+        assert incident.pair_id == b.PAIR_ID
+        assert incident.size == 100
+        assert incident.entry_price == Decimal("0.12")
+        assert incident.exit_price == Decimal("0.09")
+        assert incident.cost == Decimal("3.00")
+        assert incident.at_ms == 2_300
 
 
 class TestCompletedEntry:

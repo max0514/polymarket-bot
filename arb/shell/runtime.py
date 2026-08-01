@@ -35,7 +35,7 @@ from arb.events import Event
 from arb.reducer import step
 from arb.settlement import SettlementRecord
 from arb.shell.event_log import EventLog
-from arb.shell.store import DecisionStore
+from arb.shell.store import DecisionStore, OrderStore
 from arb.state import State
 
 __all__ = ["DryRunGateway", "OrderGateway", "Runtime"]
@@ -79,10 +79,12 @@ class Runtime:
         *,
         decisions: DecisionStore,
         event_log: EventLog,
+        orders: OrderStore | None = None,
         gateway: OrderGateway | None = None,
     ) -> None:
         self.state = state
         self._decisions = decisions
+        self._orders = orders
         self._event_log = event_log
         self._gateway = gateway if gateway is not None else DryRunGateway()
         self.settlements: list[SettlementRecord] = []
@@ -102,6 +104,12 @@ class Runtime:
         self._decisions.append_all(
             action.record for action in actions if isinstance(action, EmitDecisionRecord)
         )
+        if self._orders is not None:
+            # Persisted whether or not the gateway sends them, so that intent
+            # can be reconciled against what the venues actually did.
+            self._orders.append_all(
+                action for action in actions if isinstance(action, PlaceOrder)
+            )
 
         for action in actions:
             match action:
