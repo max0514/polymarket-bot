@@ -10,10 +10,13 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Iterable, Mapping, Sequence
 
+from arb.actions import Action, EmitDecisionRecord
 from arb.config import Config
+from arb.decisions import DecisionRecord
 from arb.domain import BookKey, BookSnapshot, Level, MatchedPair, Venue
 from arb.pricing import FeeSchedule
-from arb.state import State
+from arb.risk import RiskLimits
+from arb.state import KillTier, Position, State
 
 SPORTS_FEES = FeeSchedule(kalshi_rate=Decimal("0.07"), polymarket_rate=Decimal("0.05"))
 
@@ -28,14 +31,18 @@ def config(
     min_net_edge: Decimal = Decimal("0.002"),
     max_skew_ms: int = 2_000,
     max_book_age_ms: int = 5_000,
+    limits: RiskLimits | None = None,
 ) -> Config:
     return Config(
         fee_schedules=(
-            {"sports": SPORTS_FEES} if fee_schedules is None else fee_schedules
+            {"sports": SPORTS_FEES, "economics": SPORTS_FEES}
+            if fee_schedules is None
+            else fee_schedules
         ),
         min_net_edge=min_net_edge,
         max_skew_ms=max_skew_ms,
         max_book_age_ms=max_book_age_ms,
+        risk=RiskLimits() if limits is None else limits,
     )
 
 
@@ -121,6 +128,9 @@ def state_with(
     *pairs: MatchedPair,
     config_: Config | None = None,
     books: Mapping[BookKey, BookSnapshot] | None = None,
+    positions: tuple[Position, ...] = (),
+    leg_failures: int = 0,
+    kill_tier: KillTier = KillTier.NONE,
     now_ms: int = 0,
 ) -> State:
     """A state whose registry holds the given pairs."""
@@ -128,5 +138,13 @@ def state_with(
         config=config() if config_ is None else config_,
         pair_registry={matched.pair_id: matched for matched in pairs},
         books={} if books is None else books,
+        positions=positions,
+        leg_failures=leg_failures,
+        kill_tier=kill_tier,
         now_ms=now_ms,
     )
+
+
+def records(actions: tuple[Action, ...]) -> list[DecisionRecord]:
+    """The Decision Records in an action trace."""
+    return [a.record for a in actions if isinstance(a, EmitDecisionRecord)]

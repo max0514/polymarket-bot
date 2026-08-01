@@ -14,7 +14,7 @@ from arb.decisions import DecisionRecord, RejectionReason
 from arb.events import BookUpdate
 from arb.reducer import step
 from tests import builders as b
-from tests.test_decision_records import records
+from tests.builders import records
 
 
 def evaluate_with_skew(

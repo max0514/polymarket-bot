@@ -8,12 +8,108 @@ earlier state.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from decimal import Decimal
+from enum import Enum
 from typing import Mapping
 
 from arb.config import Config
-from arb.domain import BookKey, BookSnapshot, MatchedPair
+from arb.domain import BookKey, BookSnapshot, MatchedPair, Venue, other_venue
+from arb.risk import RiskBudgets, RiskFlag, evaluate_risk
 
-__all__ = ["State"]
+__all__ = ["KillTier", "OrderRef", "PendingEntry", "Position", "State"]
+
+
+class KillTier(Enum):
+    """The kill switch, tiered so that the safety system does not itself
+    destroy locked profit.
+
+    Open pairs are the safest assets in the book - their exposure decays to
+    zero at settlement - so flattening them is a loss-making action, reserved
+    for account emergencies rather than used as the default response.
+    """
+
+    NONE = "none"
+    #: L1 - stop new entries, hold open positions. The default.
+    STOP_ENTRIES = "stop_entries"
+    #: L2 - additionally exit positions flagged by a specific trigger.
+    EXIT_FLAGGED = "exit_flagged"
+    #: L3 - flatten everything.
+    FLATTEN_ALL = "flatten_all"
+
+
+@dataclass(frozen=True, slots=True)
+class Position:
+    """An open Matched Pair: both legs filled, held to settlement."""
+
+    pair_id: str
+    size: int
+    kalshi_notional: Decimal
+    polymarket_notional: Decimal
+    category: str
+    settlement_source: str
+    settlement_date: str
+    opened_at_ms: int
+
+    #: Predicted Net Edge per contract at entry, kept so that realised profit
+    #: can be reconciled against what the model promised.
+    predicted_net_edge: Decimal = Decimal("0")
+
+    #: Set when an early-exit trigger fires. L2 exits exactly these.
+    exit_trigger: str = ""
+
+    @property
+    def notional(self) -> Decimal:
+        """Capital committed across both venues - both legs are paid on entry."""
+        return self.kalshi_notional + self.polymarket_notional
+
+    @property
+    def is_flagged(self) -> bool:
+        return bool(self.exit_trigger)
+
+
+@dataclass(frozen=True, slots=True)
+class OrderRef:
+    """What an order was for, so a fill can be routed without the shell having
+    to remember."""
+
+    pair_id: str
+    venue: Venue
+    purpose: str
+
+
+@dataclass(frozen=True, slots=True)
+class PendingEntry:
+    """A pair mid-entry: leg 1 placed or filled, leg 2 not yet done.
+
+    This is the exposure window. It exists for exactly one round trip, and
+    every path out of it either opens a Position or unwinds.
+    """
+
+    pair_id: str
+    intended_size: int
+    first_venue: Venue
+    category: str
+    settlement_source: str
+    settlement_date: str
+    predicted_net_edge: Decimal
+    kalshi_limit: Decimal
+    polymarket_limit: Decimal
+
+    first_filled_size: int = 0
+    first_fill_price: Decimal = Decimal("0")
+    second_filled_size: int = 0
+    second_fill_price: Decimal = Decimal("0")
+
+    #: Leg 2 gets exactly one re-quote up to breakeven. Chasing further would
+    #: turn a bounded recovery into an unbounded one.
+    requoted: bool = False
+
+    @property
+    def second_venue(self) -> Venue:
+        return other_venue(self.first_venue)
+
+    def price_on(self, venue: Venue) -> Decimal:
+        return self.kalshi_limit if venue == "kalshi" else self.polymarket_limit
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,6 +125,35 @@ class State:
     #: published by the matching pipeline and read here as data.
     pair_registry: Mapping[str, MatchedPair] = field(default_factory=dict)
 
+    positions: tuple[Position, ...] = ()
+
+    #: Pairs mid-entry, keyed by pair id. A pair here is not a candidate.
+    pending: Mapping[str, PendingEntry] = field(default_factory=dict)
+
+    #: Live orders, keyed by order id, so a Fill can find what it belongs to.
+    orders: Mapping[str, OrderRef] = field(default_factory=dict)
+
+    #: Monotonic counter behind order ids. Ids must be derived from state
+    #: rather than generated, because a random id would make replay produce a
+    #: different action trace on every run.
+    order_sequence: int = 0
+
+    venue_balances: Mapping[Venue, Decimal] = field(default_factory=dict)
+    venue_healthy: Mapping[Venue, bool] = field(default_factory=dict)
+    venue_latency_ms: Mapping[Venue, int] = field(default_factory=dict)
+
+    #: Cumulative realised cost of unwinding after Leg Failures.
+    unwind_cost: Decimal = Decimal("0")
+
+    #: Published by the background risk pass; read by the execution path.
+    risk_flags: frozenset[RiskFlag] = frozenset()
+    risk_budgets: RiskBudgets = field(default_factory=RiskBudgets)
+
+    #: Cumulative Leg Failures, against the configured budget.
+    leg_failures: int = 0
+
+    kill_tier: KillTier = KillTier.NONE
+
     #: Latest time the reducer has been told about. Advances only through
     #: events - never read from a clock.
     now_ms: int = 0
@@ -41,6 +166,22 @@ class State:
         event cannot make a fresh book look stale."""
         return replace(self, now_ms=max(self.now_ms, at_ms))
 
+    def with_republished_risk(self) -> State:
+        """Re-run the background risk pass and publish the result.
+
+        Called on every event that can change a risk input - balances,
+        connectivity, positions, leg failures - and never from the path that
+        evaluates a candidate.
+        """
+        flags, budgets = evaluate_risk(
+            limits=self.config.risk,
+            positions=self.positions,
+            venue_balances=self.venue_balances,
+            venue_healthy=self.venue_healthy,
+            leg_failures=self.leg_failures,
+        )
+        return replace(self, risk_flags=flags, risk_budgets=budgets)
+
     def pairs_touching(self, key: BookKey) -> tuple[MatchedPair, ...]:
         """Registered pairs with a leg on this contract, in a stable order.
 
@@ -50,8 +191,15 @@ class State:
         return tuple(
             self.pair_registry[pair_id]
             for pair_id in sorted(self.pair_registry)
-            if key in (
+            if key
+            in (
                 self.pair_registry[pair_id].key_on("kalshi"),
                 self.pair_registry[pair_id].key_on("polymarket"),
             )
         )
+
+    def position_for(self, pair_id: str) -> Position | None:
+        for position in self.positions:
+            if position.pair_id == pair_id:
+                return position
+        return None

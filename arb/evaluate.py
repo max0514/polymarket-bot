@@ -13,6 +13,7 @@ from typing import Any, Callable
 from arb.decisions import DecisionRecord, RejectionReason
 from arb.domain import MatchedPair
 from arb.pricing import fee_breakdown, gross_edge
+from arb.risk import blocking_flags_for
 from arb.sizing import walk
 from arb.state import State
 
@@ -99,6 +100,22 @@ def evaluate_pair(state: State, pair: MatchedPair, at_ms: int) -> DecisionRecord
     sized = walk(kalshi.asks, polymarket.asks, schedule)
     if not sized.is_tradeable:
         return record(RejectionReason.NO_PROFITABLE_SIZE, **priced)
+
+    # Reading published flags and budgets - a handful of comparisons against
+    # values the background pass already computed. No aggregation happens here.
+    blocking = blocking_flags_for(
+        pair,
+        sized.kalshi_notional + sized.polymarket_notional,
+        flags=state.risk_flags,
+        budgets=state.risk_budgets,
+        limits=state.config.risk,
+    )
+    if blocking:
+        return record(
+            RejectionReason.RISK_BLOCKED,
+            **priced,
+            blocking_flags=tuple(flag.value for flag in blocking),
+        )
 
     return record(
         None,

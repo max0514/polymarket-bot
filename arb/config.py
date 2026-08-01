@@ -14,6 +14,7 @@ from types import MappingProxyType
 from typing import Mapping
 
 from arb.pricing import FeeSchedule
+from arb.risk import RiskLimits
 
 __all__ = ["Config"]
 
@@ -38,6 +39,11 @@ class Config:
     #: Maximum age of either book, measured against the reducer's latest known
     #: time, before it is considered stale.
     max_book_age_ms: int = 5_000
+
+    #: Balance floors, concentration caps, and the Leg Failure budget. All
+    #: default to no limit - the spec proposes no values because total capital
+    #: was never specified.
+    risk: RiskLimits = field(default_factory=RiskLimits)
 
     def fees_for(self, category: str) -> FeeSchedule | None:
         """`None` when the category has no configured schedule.

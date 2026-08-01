@@ -12,16 +12,12 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from arb.actions import Action, EmitDecisionRecord
 from arb.decisions import DecisionRecord, RejectionReason
 from arb.events import BookUpdate
 from arb.reducer import step
 from arb.state import State
 from tests import builders as b
-
-
-def records(actions: tuple[Action, ...]) -> list[DecisionRecord]:
-    return [a.record for a in actions if isinstance(a, EmitDecisionRecord)]
+from tests.builders import records
 
 
 def evaluate(
