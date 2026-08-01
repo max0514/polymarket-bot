@@ -25,8 +25,9 @@ local data artifacts.
 - Serves live data through JSON endpoints for dashboards, bots, and notebooks.
 - Collects Kalshi BTC 15-minute order books for cross-venue comparison.
 - Tracks BTC reference-price mismatch between Kalshi BRTI and Polymarket RTDS.
-- Estimates empirical BTC 15-minute divergence risk from collected data.
 - Provides dashboards for live order books and Kalshi vs Polymarket arbitrage.
+- Evaluates cross-venue arbitrage candidates against real fees in `arb/`, and
+  logs every evaluation - accepted or rejected - so a base rate can be computed.
 
 ## System Architecture
 
@@ -46,13 +47,11 @@ Collectors and pipelines
   scripts/live_btc_reference_price_pipeline.py
   scripts/collect_btc_updown_data.py
   scripts/refetch_btc_price_history_highres.py
-  scripts/estimate_btc_divergence_risk.py
 
 Storage
   data/live_orderbooks/*.sqlite
   data/btc_updown_15m/*.csv
   data/btc_updown_15m/*.jsonl
-  kalshi/kalshi_btc15m_data/*.csv
 
 Interfaces
   JSON API on port 8765
@@ -82,7 +81,17 @@ scripts/
   refetch_btc_price_history_highres.py    # high-resolution price history
   flatten_btc_price_history.py            # JSONL to CSV transform
   plot_kxbtc_vs_polymarket.py             # historical comparison plots
-  estimate_btc_divergence_risk.py         # empirical risk estimates
+
+arb/                                      # cross-venue arbitrage decision core
+  reducer.py                              # the seam: step(State, Event)
+  pricing.py sizing.py evaluate.py        # fees, Net Edge, marginal-stop walk
+  verification.py registry.py             # pair matching and approval
+  risk.py inventory.py                    # flags, budgets, Drift steering
+  legging.py execution.py exits.py        # order placement and recovery
+  settlement.py report.py replay.py       # reconciliation and the verdict
+  shell/                                  # clients, persistence, runtime loop
+
+tests/                                    # pytest suite for the above
 
 deploy/
   live-data-server.md
@@ -91,10 +100,10 @@ deploy/
 data/
   live_orderbooks/                        # runtime SQLite files
   btc_updown_15m/                         # historical research artifacts
-
-kalshi/
-  kalshi_btc15m_data/                     # copied Kalshi BTC 15m dataset
 ```
+
+Note: `scripts/estimate_btc_divergence_risk.py` and the `kalshi/` data tree are
+referenced by older notes but are not present in this checkout.
 
 ## Setup
 
@@ -246,19 +255,54 @@ Flatten price history JSONL into CSV:
 python3 scripts/flatten_btc_price_history.py
 ```
 
-Estimate empirical BTC divergence risk from collected data:
-
-```bash
-python3 scripts/estimate_btc_divergence_risk.py
-```
-
 Research artifacts are written mainly to:
 
 ```text
 data/btc_updown_15m/
-data/live_orderbooks/btc_divergence_risk.sqlite
-data/live_orderbooks/btc_divergence_risk_latest.json
 ```
+
+## Cross-Venue Arbitrage Decision Core
+
+`arb/` is a separate system from the collectors above, built to answer one
+question: does a capturable arbitrage exist between Kalshi and Polymarket?
+
+It is a functional core with an imperative shell. All logic sits behind one
+reducer, `step(State, Event) -> (State, Action[])`, which is pure - no clock,
+no I/O, no randomness. Time and connectivity arrive as events, so a recorded
+event log replays to a byte-identical action trace. That single property makes
+the regression suite, the backtest, and the evidence behind the verdict the
+same artifact.
+
+Two things distinguish it from the arbitrage dashboard in `scripts/`:
+
+- **Net Edge can be negative.** Fees are subtracted at the real per-contract
+  rate on each leg, `(0.07 + theta) * p * (1 - p)`, rather than applied as a
+  proportional haircut to a quantity that is already non-negative. The
+  dashboard's `--profit-haircut` cannot mark anything unprofitable.
+- **Rejections are persisted.** Every evaluated candidate is written with its
+  fee breakdown and rejection reason, so a base rate has a denominator.
+
+Run the tests:
+
+```bash
+python3 -m pytest
+```
+
+Typecheck:
+
+```bash
+python3 -m mypy
+```
+
+Execution defaults to a dry run: `arb.shell.runtime.DryRunGateway` records
+order intent and sends nothing, so a verdict can be collected with no capital
+at risk. Live order routing requires supplying a real `OrderGateway`.
+
+Unresolved before this system can produce a verdict, both flagged in the spec:
+the verdict criteria themselves (no threshold, observation window, or stopping
+rule has been set) and total capital with its per-venue split, which every
+balance floor and concentration budget depends on. All are configuration in
+`arb.config.Config` and `arb.risk.RiskLimits`, with no defaults invented.
 
 ## Trading Workflow
 
