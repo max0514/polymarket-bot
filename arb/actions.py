@@ -8,16 +8,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Literal, TypeAlias
+from typing import TYPE_CHECKING, Literal, TypeAlias
 
 from arb.decisions import DecisionRecord
 from arb.domain import Venue
+
+if TYPE_CHECKING:  # pragma: no cover - import cycle: settlement imports actions
+    from arb.settlement import SettlementRecord
 
 __all__ = [
     "Action",
     "Alert",
     "CancelOrder",
     "EmitDecisionRecord",
+    "EmitSettlementRecord",
     "OrderPurpose",
     "PlaceOrder",
     "Side",
@@ -35,6 +39,13 @@ class EmitDecisionRecord:
     """Persist one evaluation, accepted or rejected."""
 
     record: DecisionRecord
+
+
+@dataclass(frozen=True, slots=True)
+class EmitSettlementRecord:
+    """Persist one reconciled pair, and its ground-truth label."""
+
+    record: "SettlementRecord"
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,4 +87,6 @@ class Alert:
     pair_id: str = ""
 
 
-Action: TypeAlias = EmitDecisionRecord | PlaceOrder | CancelOrder | Alert
+Action: TypeAlias = (
+    EmitDecisionRecord | EmitSettlementRecord | PlaceOrder | CancelOrder | Alert
+)

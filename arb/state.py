@@ -10,11 +10,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from enum import Enum
-from typing import Mapping
+from typing import TYPE_CHECKING, Mapping
 
 from arb.config import Config
 from arb.domain import BookKey, BookSnapshot, MatchedPair, Venue, other_venue
 from arb.risk import RiskBudgets, RiskFlag, evaluate_risk
+
+if TYPE_CHECKING:  # pragma: no cover - import cycle: settlement imports state
+    from arb.settlement import LegSettlement
 
 __all__ = ["KillTier", "OrderRef", "PendingEntry", "Position", "State"]
 
@@ -54,8 +57,15 @@ class Position:
     #: can be reconciled against what the model promised.
     predicted_net_edge: Decimal = Decimal("0")
 
+    #: Fees actually charged on entry, at the prices that actually filled.
+    fees_paid: Decimal = Decimal("0")
+
     #: Set when an early-exit trigger fires. L2 exits exactly these.
     exit_trigger: str = ""
+
+    #: Exit orders are already out. Prevents a second trigger, or a kill tier
+    #: arriving after one, from selling the same position twice.
+    exiting: bool = False
 
     @property
     def notional(self) -> Decimal:
@@ -144,6 +154,13 @@ class State:
 
     #: Cumulative realised cost of unwinding after Leg Failures.
     unwind_cost: Decimal = Decimal("0")
+
+    #: Legs that have settled, per pair, while the other leg has not. Holding
+    #: them here is what makes asymmetric settlement timing observable rather
+    #: than a race.
+    settling: Mapping[str, Mapping[Venue, "LegSettlement"]] = field(
+        default_factory=dict
+    )
 
     #: Published by the background risk pass; read by the execution path.
     risk_flags: frozenset[RiskFlag] = frozenset()

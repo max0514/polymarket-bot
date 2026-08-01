@@ -16,11 +16,16 @@ from arb.domain import BookSnapshot, Venue
 __all__ = [
     "BalanceUpdate",
     "BookUpdate",
+    "DisputeOpened",
     "Event",
     "Fill",
+    "KillSwitch",
     "OrderAck",
     "PartialFill",
+    "Postponement",
     "Reject",
+    "RuleDivergenceFound",
+    "Settlement",
     "Timer",
     "TunnelHealth",
 ]
@@ -115,6 +120,63 @@ class BalanceUpdate:
     at_ms: int
 
 
+@dataclass(frozen=True, slots=True)
+class DisputeOpened:
+    """A dispute was raised on the Polymarket leg of an open pair.
+
+    A disputed market resolves by token vote, and voting power concentrates
+    among participants who may hold positions - a mechanism with a consistent
+    sign rather than a random one. A pair under dispute has stopped being
+    riskless, whatever its price says.
+    """
+
+    pair_id: str
+    at_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class RuleDivergenceFound:
+    """Verification was wrong, discovered after entry."""
+
+    pair_id: str
+    detail: str
+    at_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class Postponement:
+    """The underlying event was postponed, suspended, or its release delayed.
+
+    Dangerous because void rules differ between venues: a postponement can void
+    one leg and not the other, turning a matched pair into a naked position.
+    """
+
+    pair_id: str
+    at_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class Settlement:
+    """One leg settled. Recorded per venue because asymmetric settlement timing
+    is itself information (user story 60)."""
+
+    pair_id: str
+    venue: Venue
+    #: Payout per contract on this leg: 1 for the winning side, 0 for the
+    #: losing side. A void settles at the entry price and is reported as such
+    #: by the shell.
+    payout_per_contract: Decimal
+    at_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class KillSwitch:
+    """Operator-initiated halt. `tier` is the name of a `KillTier`."""
+
+    tier: str
+    at_ms: int
+
+
 Event: TypeAlias = (
     BookUpdate
     | Timer
@@ -124,4 +186,9 @@ Event: TypeAlias = (
     | Fill
     | PartialFill
     | Reject
+    | DisputeOpened
+    | RuleDivergenceFound
+    | Postponement
+    | Settlement
+    | KillSwitch
 )

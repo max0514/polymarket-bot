@@ -24,6 +24,7 @@ from typing import Iterable
 from arb.actions import Action, Alert, PlaceOrder
 from arb.domain import BookSnapshot, MatchedPair, Venue
 from arb.execution import breakeven_price, leg_difficulty
+from arb.pricing import fee_breakdown
 from arb.sizing import Sizing
 from arb.state import OrderRef, PendingEntry, Position, State
 
@@ -255,6 +256,17 @@ def _open_position(
         else (second_notional, first_notional)
     )
 
+    # Fees are charged on what actually filled, not on what was quoted, so that
+    # realised profit reconciles against a real number rather than an intent.
+    pair = state.pair_registry[pending.pair_id]
+    schedule = state.config.fees_for(pair.category)
+    fees_paid = (
+        fee_breakdown(kalshi_notional / size, polymarket_notional / size, schedule).total
+        * size
+        if schedule is not None
+        else ZERO
+    )
+
     position = Position(
         pair_id=pending.pair_id,
         size=size,
@@ -265,6 +277,7 @@ def _open_position(
         settlement_date=pending.settlement_date,
         opened_at_ms=at_ms,
         predicted_net_edge=pending.predicted_net_edge,
+        fees_paid=fees_paid,
     )
     return replace(
         state, positions=state.positions + (position,)

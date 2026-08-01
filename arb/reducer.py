@@ -17,18 +17,25 @@ from arb.evaluate import evaluate_pair
 from arb.events import (
     BalanceUpdate,
     BookUpdate,
+    DisputeOpened,
     Event,
     Fill,
+    KillSwitch,
     OrderAck,
     PartialFill,
+    Postponement,
     Reject,
+    RuleDivergenceFound,
+    Settlement,
     Timer,
     TunnelHealth,
 )
+from arb.exits import apply_kill_switch, trigger_exit
 from arb.inventory import rank_candidates
 from arb.legging import begin_entry, on_fill, on_reject
+from arb.settlement import on_settlement
 from arb.sizing import walk
-from arb.state import State
+from arb.state import KillTier, State
 
 __all__ = ["step"]
 
@@ -55,6 +62,32 @@ def step(state: State, event: Event) -> tuple[State, tuple[Action, ...]]:
         case Reject():
             state = state.at_time(event.at_ms)
             return on_reject(state, event.order_id, event.at_ms)
+        case DisputeOpened():
+            return trigger_exit(
+                state.at_time(event.at_ms), event.pair_id, "dispute_opened", "", event.at_ms
+            )
+        case RuleDivergenceFound():
+            return trigger_exit(
+                state.at_time(event.at_ms),
+                event.pair_id,
+                "rule_divergence",
+                event.detail,
+                event.at_ms,
+            )
+        case Postponement():
+            return trigger_exit(
+                state.at_time(event.at_ms), event.pair_id, "postponement", "", event.at_ms
+            )
+        case Settlement():
+            return on_settlement(
+                state.at_time(event.at_ms),
+                event.pair_id,
+                event.venue,
+                event.payout_per_contract,
+                event.at_ms,
+            )
+        case KillSwitch():
+            return apply_kill_switch(state.at_time(event.at_ms), event.tier, event.at_ms)
 
 
 def _on_book_update(state: State, event: BookUpdate) -> tuple[State, tuple[Action, ...]]:

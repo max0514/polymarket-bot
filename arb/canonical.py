@@ -28,5 +28,11 @@ def quantize(value: Decimal) -> Decimal:
 
 
 def canonical_decimal(value: Decimal) -> str:
-    """The one true string form of a decimal quantity in this system."""
-    return str(quantize(value))
+    """The one true string form of a decimal quantity in this system.
+
+    Formatted with `:f` rather than `str()` because `Decimal` renders some
+    values in scientific notation - notably zero, which quantizes to `0E-8` -
+    and a log that spells the same number two ways is not comparable across
+    runs.
+    """
+    return format(quantize(value), "f")

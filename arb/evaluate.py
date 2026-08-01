@@ -15,7 +15,7 @@ from arb.domain import MatchedPair
 from arb.pricing import fee_breakdown, gross_edge
 from arb.risk import blocking_flags_for
 from arb.sizing import walk
-from arb.state import State
+from arb.state import KillTier, State
 
 __all__ = ["evaluate_pair"]
 
@@ -54,6 +54,15 @@ def evaluate_pair(state: State, pair: MatchedPair, at_ms: int) -> DecisionRecord
     if schedule is None:
         return record(
             RejectionReason.UNPRICEABLE_CATEGORY,
+            kalshi_price=kalshi_ask.price,
+            polymarket_price=polymarket_ask.price,
+        )
+
+    # Any kill tier stops new entries. The tiers differ in what they do to
+    # *open* positions, not in whether they stop opening new ones.
+    if state.kill_tier is not KillTier.NONE:
+        return record(
+            RejectionReason.KILL_SWITCH,
             kalshi_price=kalshi_ask.price,
             polymarket_price=polymarket_ask.price,
         )
