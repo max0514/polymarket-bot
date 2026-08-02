@@ -29,6 +29,7 @@ __all__ = [
     "KalshiSeries",
     "PolymarketMarket",
     "Verdict",
+    "normalise_term",
     "verify",
 ]
 
@@ -155,8 +156,8 @@ def verify(kalshi: KalshiSeries, polymarket: PolymarketMarket) -> Verdict:
     failures: list[Failure] = []
 
     for field, unverifiable, divergent in _COMPARED_FIELDS:
-        left = _stated(getattr(kalshi.terms, field))
-        right = _stated(getattr(polymarket.terms, field))
+        left = normalise_term(getattr(kalshi.terms, field))
+        right = normalise_term(getattr(polymarket.terms, field))
         if left is None or right is None:
             failures.append(unverifiable)
         elif left != right:
@@ -184,8 +185,8 @@ def _release_failures(
     if not kalshi.revisable:
         return []
 
-    left = _stated(kalshi.settling_release_timestamp)
-    right = _stated(polymarket.settling_release_timestamp)
+    left = normalise_term(kalshi.settling_release_timestamp)
+    right = normalise_term(polymarket.settling_release_timestamp)
     if left is None or right is None:
         return [Failure.RELEASE_NOT_PINNED]
     if left != right:
@@ -193,7 +194,7 @@ def _release_failures(
     return []
 
 
-def _stated(value: str | None) -> str | None:
+def normalise_term(value: str | None) -> str | None:
     """Normalise a term for comparison, or `None` if the venue did not state it.
 
     Whitespace-only is treated as unstated: an empty field in a contract-terms
