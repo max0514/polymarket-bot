@@ -3,8 +3,9 @@
 This repository is a Python data and trading-research stack for Polymarket
 crypto 15-minute Up/Down markets. It collects live order books, stores them in
 SQLite, exposes a small HTTP API, compares Polymarket BTC markets against
-Kalshi BTC 15-minute markets, and provides dashboards for monitoring live
-pricing, arbitrage, and reference-price divergence.
+Kalshi BTC 15-minute markets, and monitors reference-price divergence. Alongside
+it, `arb/` evaluates cross-venue arbitrage against real fees and logs every
+decision.
 
 The current codebase focuses on market data, research, and trading decision
 support. It does not place live Polymarket orders by default. Treat every signal
@@ -25,7 +26,7 @@ local data artifacts.
 - Serves live data through JSON endpoints for dashboards, bots, and notebooks.
 - Collects Kalshi BTC 15-minute order books for cross-venue comparison.
 - Tracks BTC reference-price mismatch between Kalshi BRTI and Polymarket RTDS.
-- Provides dashboards for live order books and Kalshi vs Polymarket arbitrage.
+- Provides a dashboard for live order books.
 - Evaluates cross-venue arbitrage candidates against real fees in `arb/`, and
   logs every evaluation - accepted or rejected - so a base rate can be computed.
 
@@ -56,7 +57,7 @@ Storage
 Interfaces
   JSON API on port 8765
   live order book dashboard
-  Kalshi vs Polymarket arbitrage dashboard
+  pair review screen on port 8771
   local notebooks and downstream scripts
 
 Trading decision layer
@@ -75,7 +76,6 @@ scripts/
   live_btc_orderbook_collector.py         # Polymarket order book collector
   live_kalshi_btc15_orderbook_collector.py # Kalshi BTC 15m collector
   live_btc_reference_price_pipeline.py    # BRTI vs Polymarket RTDS checks
-  arbitrage_dashboard.py                  # Kalshi vs Polymarket dashboard
   web_orderbook_dashboard.py              # live order book dashboard
   collect_btc_updown_data.py              # historical Polymarket/Binance data
   refetch_btc_price_history_highres.py    # high-resolution price history
@@ -178,24 +178,8 @@ Live order book dashboard:
 python3 scripts/web_orderbook_dashboard.py --host 127.0.0.1 --port 8767
 ```
 
-Kalshi vs Polymarket arbitrage dashboard:
-
-```bash
-python3 scripts/arbitrage_dashboard.py --host 127.0.0.1 --port 8770
-```
-
-The arbitrage dashboard applies a default profit haircut for trading fees,
-execution risk, and price-window mismatch risk. Override it if needed:
-
-```bash
-python3 scripts/arbitrage_dashboard.py --profit-haircut 0.05
-```
-
-Detected opportunities are stored in:
-
-```text
-data/live_orderbooks/kalshi_polymarket_arbitrage.sqlite
-```
+Cross-venue arbitrage now lives in `arb/`, not in a dashboard script. See
+[Cross-Venue Arbitrage Decision Core](#cross-venue-arbitrage-decision-core).
 
 ## Kalshi And Reference-Price Monitoring
 
@@ -273,14 +257,22 @@ event log replays to a byte-identical action trace. That single property makes
 the regression suite, the backtest, and the evidence behind the verdict the
 same artifact.
 
-Two things distinguish it from the arbitrage dashboard in `scripts/`:
+It replaces `scripts/arbitrage_dashboard.py`, which was deleted because it
+could not answer the question it appeared to answer:
 
 - **Net Edge can be negative.** Fees are subtracted at the real per-contract
-  rate on each leg, `(0.07 + theta) * p * (1 - p)`, rather than applied as a
-  proportional haircut to a quantity that is already non-negative. The
-  dashboard's `--profit-haircut` cannot mark anything unprofitable.
+  rate on each leg, `(0.07 + theta) * p * (1 - p)`. The old dashboard applied a
+  proportional `--profit-haircut` to a quantity that was already non-negative,
+  so no detected opportunity could ever come out unprofitable.
 - **Rejections are persisted.** Every evaluated candidate is written with its
-  fee breakdown and rejection reason, so a base rate has a denominator.
+  fee breakdown and rejection reason, so a base rate has a denominator. The old
+  dashboard stored only detected opportunities.
+
+Review and approve Matched Pairs:
+
+```bash
+python3 -m arb.shell.review_server --operator YOUR_NAME
+```
 
 Run the tests:
 

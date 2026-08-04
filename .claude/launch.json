@@ -2,10 +2,19 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "Polymarket Bot (simulate, single run)",
+      "name": "Pair review",
       "runtimeExecutable": "python3",
-      "runtimeArgs": ["/tmp/polymarket-bot-repo/run.py", "--simulate", "--once"],
-      "port": 8000
+      "runtimeArgs": [
+        "-m",
+        "arb.shell.review_server",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8771",
+        "--operator",
+        "max"
+      ],
+      "port": 8771
     }
   ]
 }

@@ -1,9 +1,10 @@
 """Fee model, Gross Edge, and Net Edge.
 
-This replaces the proportional haircut in `scripts/arbitrage_dashboard.py`,
-which multiplied a non-negative profit by `(1 - haircut)` and therefore could
-never mark a candidate unprofitable. Net Edge here is a subtraction, so it goes
-negative exactly when the real cost of trading exceeds the price gap.
+This replaces the proportional haircut in the arbitrage dashboard that used to
+live at `scripts/arbitrage_dashboard.py` (deleted). That one multiplied a
+non-negative profit by `(1 - haircut)` and therefore could never mark a
+candidate unprofitable. Net Edge here is a subtraction, so it goes negative
+exactly when the real cost of trading exceeds the price gap.
 
 Both venues charge roughly `rate * p * (1 - p)` per contract. That is a
 parabola peaking at p=0.50, which is why the strategy is structurally viable

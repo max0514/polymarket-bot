@@ -24,23 +24,20 @@ Run the separate dashboard:
 python3 scripts/web_orderbook_dashboard.py --host 127.0.0.1 --port 8767
 ```
 
-Run the Kalshi vs Polymarket arbitrage dashboard:
+Run the pair review screen:
 
 ```bash
-python3 scripts/arbitrage_dashboard.py --host 127.0.0.1 --port 8770
+python3 -m arb.shell.review_server --operator YOUR_NAME --port 8771
 ```
 
 The dashboard applies a default 5% profit haircut for trading fees, execution
 risk, and possible Kalshi/Polymarket price-window mismatch:
 
-```bash
-python3 scripts/arbitrage_dashboard.py --profit-haircut 0.05
-```
 
 Detected arbitrage opportunities are recorded here:
 
 ```text
-data/live_orderbooks/kalshi_polymarket_arbitrage.sqlite
+data/live_orderbooks/pair_candidates.sqlite
 ```
 
 Run on a server:
