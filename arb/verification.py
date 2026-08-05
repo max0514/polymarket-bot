@@ -95,6 +95,9 @@ class KalshiSeries:
     #: structured fields in `terms` are the comparison - but shown to the
     #: reviewer, whose job is to catch what the extraction missed.
     resolution_text: str = ""
+    #: The tradeable event page - where the market itself is listed, as opposed
+    #: to the terms document behind it.
+    event_url: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +108,8 @@ class PolymarketMarket:
     terms: ContractTerms
     #: See `KalshiSeries.resolution_text`.
     resolution_text: str = ""
+    #: See `KalshiSeries.event_url`.
+    event_url: str = ""
 
 
 @dataclass(frozen=True, slots=True)

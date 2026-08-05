@@ -46,6 +46,8 @@ CREATE TABLE IF NOT EXISTS pair_candidates (
     polymarket_terms TEXT NOT NULL,
     kalshi_resolution_text TEXT NOT NULL DEFAULT '',
     polymarket_resolution_text TEXT NOT NULL DEFAULT '',
+    kalshi_event_url TEXT NOT NULL DEFAULT '',
+    polymarket_event_url TEXT NOT NULL DEFAULT '',
     operator TEXT NOT NULL DEFAULT '',
     operator_note TEXT NOT NULL DEFAULT '',
     decided_at_ms INTEGER,
@@ -76,7 +78,12 @@ class CandidateStore:
             conn.executescript(_SCHEMA)
             # Stores created before a column existed migrate in place, so an
             # operator's decided pairs survive an upgrade.
-            for column in ("kalshi_resolution_text", "polymarket_resolution_text"):
+            for column in (
+                "kalshi_resolution_text",
+                "polymarket_resolution_text",
+                "kalshi_event_url",
+                "polymarket_event_url",
+            ):
                 _ensure_column(conn, column)
 
     @contextmanager
@@ -101,8 +108,10 @@ class CandidateStore:
                     polymarket_id, polymarket_question, polymarket_url,
                     polymarket_terms,
                     kalshi_resolution_text, polymarket_resolution_text,
+                    kalshi_event_url, polymarket_event_url,
                     operator, operator_note, decided_at_ms, settled_identically
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     candidate.pair_id,
@@ -121,6 +130,8 @@ class CandidateStore:
                     _terms_to_json(candidate.polymarket.terms),
                     candidate.kalshi.resolution_text,
                     candidate.polymarket.resolution_text,
+                    candidate.kalshi.event_url,
+                    candidate.polymarket.event_url,
                     candidate.operator,
                     candidate.operator_note,
                     candidate.decided_at_ms,
@@ -171,6 +182,7 @@ def _from_row(row: sqlite3.Row) -> PairCandidate:
             contract_terms_url=row["kalshi_url"],
             terms=_terms_from_json(row["kalshi_terms"]),
             resolution_text=row["kalshi_resolution_text"],
+            event_url=row["kalshi_event_url"],
         ),
         polymarket=PolymarketMarket(
             condition_id=row["polymarket_id"],
@@ -178,6 +190,7 @@ def _from_row(row: sqlite3.Row) -> PairCandidate:
             resolution_source_url=row["polymarket_url"],
             terms=_terms_from_json(row["polymarket_terms"]),
             resolution_text=row["polymarket_resolution_text"],
+            event_url=row["polymarket_event_url"],
         ),
         category=row["category"],
         settlement_date=row["settlement_date"],

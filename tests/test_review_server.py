@@ -293,3 +293,42 @@ class TestPortSelection:
         monkeypatch.delenv("PORT", raising=False)
 
         assert build_parser().parse_args(["--operator", "max"]).port == 8771
+
+
+class TestEventLinksOnThePage:
+    def test_each_venue_links_to_its_event(
+        self, server: str, store: CandidateStore
+    ) -> None:
+        candidate = verify_candidate(proposed())
+        candidate = replace(
+            candidate,
+            kalshi=replace(
+                candidate.kalshi, event_url="https://kalshi.com/markets/KXNFL-KC"
+            ),
+            polymarket=replace(
+                candidate.polymarket,
+                event_url="https://polymarket.com/event/chiefs-eagles",
+            ),
+        )
+        store.save(candidate)
+
+        page = get(server)
+
+        assert 'href="https://kalshi.com/markets/KXNFL-KC"' in page
+        assert 'href="https://polymarket.com/event/chiefs-eagles"' in page
+        assert "View on Kalshi" in page
+        assert "View on Polymarket" in page
+
+    def test_the_decision_buttons_sit_in_the_card_header(
+        self, server: str, store: CandidateStore
+    ) -> None:
+        """The first thing on a decidable card is the decision, not the bottom
+        of a long scroll past the resolution text."""
+        store.save(verify_candidate(proposed()))
+
+        page = get(server)
+        card = page.split('<article class="card">')[1]
+        head = card.split('<div class="questions">')[0]
+
+        assert "Same pair &mdash; approve" in head
+        assert "Not the same pair" in head

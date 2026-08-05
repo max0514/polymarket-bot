@@ -157,3 +157,46 @@ class TestResolutionTextPersists:
 
         restored = store.get("nfl-kc")
         assert restored is not None and restored.kalshi.resolution_text == ""
+
+
+class TestEventUrlsPersist:
+    def test_event_urls_survive_the_round_trip(self, tmp_path: Path) -> None:
+        store = CandidateStore(tmp_path / "pairs.sqlite")
+        candidate = replace(
+            proposed(),
+            kalshi=replace(
+                proposed().kalshi, event_url="https://kalshi.com/markets/KXNFL"
+            ),
+            polymarket=replace(
+                proposed().polymarket,
+                event_url="https://polymarket.com/event/chiefs",
+            ),
+        )
+        store.save(candidate)
+
+        restored = store.get("nfl-kc")
+
+        assert restored is not None
+        assert restored.kalshi.event_url == "https://kalshi.com/markets/KXNFL"
+        assert restored.polymarket.event_url == "https://polymarket.com/event/chiefs"
+
+    def test_a_store_without_the_event_columns_still_opens(
+        self, tmp_path: Path
+    ) -> None:
+        import sqlite3
+
+        path = tmp_path / "pairs.sqlite"
+        CandidateStore(path)
+        conn = sqlite3.connect(path)
+        conn.executescript(
+            "ALTER TABLE pair_candidates DROP COLUMN kalshi_event_url;"
+            "ALTER TABLE pair_candidates DROP COLUMN polymarket_event_url;"
+        )
+        conn.commit()
+        conn.close()
+
+        store = CandidateStore(path)
+        store.save(proposed())
+
+        restored = store.get("nfl-kc")
+        assert restored is not None and restored.kalshi.event_url == ""

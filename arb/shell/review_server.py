@@ -79,6 +79,8 @@ def _render_card(view: PairReview, operator: str) -> str:
 
     return _CARD.format(
         pair_id=html.escape(view.pair_id),
+        kalshi_event_url=html.escape(view.kalshi_event_url, quote=True),
+        polymarket_event_url=html.escape(view.polymarket_event_url, quote=True),
         kalshi_resolution=_resolution_html(view.kalshi_resolution),
         polymarket_resolution=_resolution_html(view.polymarket_resolution),
         category=html.escape(view.category),
@@ -290,8 +292,10 @@ h1 {{ font-family:ui-serif,Georgia,"Iowan Old Style",serif; font-size:2rem;
 .operator {{ width:100%; color:var(--faint); font-size:.85rem; }}
 .card {{ background:var(--panel); border:1px solid var(--rule); border-radius:6px;
   margin-bottom:2rem; overflow:hidden; box-shadow:var(--shadow); }}
-.card > .head {{ display:flex; flex-wrap:wrap; align-items:baseline; gap:.3rem 1rem;
+.card > .head {{ display:flex; flex-wrap:wrap; align-items:center; gap:.55rem 1rem;
   padding:1.05rem 1.3rem .95rem; border-bottom:1px solid var(--soft); }}
+.head .controls {{ padding:0; margin-left:auto; }}
+.head .hint {{ margin-left:auto; }}
 .pair-id {{ font-family:ui-monospace,Menlo,monospace; font-size:1.05rem; font-weight:600; }}
 .meta {{ color:var(--faint); font-size:.82rem; }}
 .questions {{ display:grid; gap:1rem; padding:1.05rem 1.3rem;
@@ -306,7 +310,8 @@ h1 {{ font-family:ui-serif,Georgia,"Iowan Old Style",serif; font-size:2rem;
 .venue.p h3 {{ color:var(--polymarket); }}
 .venue .q {{ margin:0 0 .35rem; font-weight:600; }}
 .venue a {{ color:var(--accent); font-size:.83rem;
-  font-family:ui-monospace,Menlo,monospace; }}
+  font-family:ui-monospace,Menlo,monospace; margin-right:1rem; }}
+.venue a.event {{ font-weight:700; }}
 .verdict {{ padding:.7rem 1.3rem; font-size:.88rem; font-weight:650;
   border-bottom:1px solid var(--soft); }}
 .verdict.ok {{ color:var(--ok); }}
@@ -378,16 +383,21 @@ _CARD = """<article class="card">
     <span class="pair-id">{pair_id}</span>
     <span class="meta">{category} &middot; settles {settlement_date} &middot;
       model confidence {confidence}</span>
+    {controls}
   </div>
   <div class="questions">
     <div class="venue k">
       <h3>Kalshi &middot; {kalshi_ticker}</h3>
       <p class="q">{kalshi_question}</p>
+      <a class="event" href="{kalshi_event_url}" rel="noreferrer noopener"
+        target="_blank">View on Kalshi &#8599;</a>
       <a href="{kalshi_url}" rel="noreferrer noopener" target="_blank">contract terms &#8599;</a>
     </div>
     <div class="venue p">
       <h3>Polymarket &middot; {polymarket_id}</h3>
       <p class="q">{polymarket_question}</p>
+      <a class="event" href="{polymarket_event_url}" rel="noreferrer noopener"
+        target="_blank">View on Polymarket &#8599;</a>
       <a href="{polymarket_url}" rel="noreferrer noopener" target="_blank">resolution rules &#8599;</a>
     </div>
   </div>
@@ -402,7 +412,6 @@ _CARD = """<article class="card">
     <div class="res-col k"><h4>Kalshi says</h4>{kalshi_resolution}</div>
     <div class="res-col p"><h4>Polymarket says</h4>{polymarket_resolution}</div>
   </div>
-  {controls}
 </article>"""
 
 _ROW = """<tr class="{status}">

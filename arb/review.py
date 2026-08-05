@@ -87,6 +87,10 @@ class PairReview:
     #: against the parsed rows. Empty when it was not captured.
     kalshi_resolution: str = ""
     polymarket_resolution: str = ""
+    #: The tradeable event pages. Fall back to the terms links when the event
+    #: page was not captured - a dead link is worse than a duplicate one.
+    kalshi_event_url: str = ""
+    polymarket_event_url: str = ""
     operator: str = ""
     operator_note: str = ""
 
@@ -174,6 +178,13 @@ def review_pair(candidate: PairCandidate) -> PairReview:
         rows=rows,
         kalshi_resolution=candidate.kalshi.resolution_text,
         polymarket_resolution=candidate.polymarket.resolution_text,
+        kalshi_event_url=(
+            candidate.kalshi.event_url or candidate.kalshi.contract_terms_url
+        ),
+        polymarket_event_url=(
+            candidate.polymarket.event_url
+            or candidate.polymarket.resolution_source_url
+        ),
         operator=candidate.operator,
         operator_note=candidate.operator_note,
     )

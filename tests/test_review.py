@@ -254,3 +254,40 @@ class TestResolutionText:
 
         assert view.kalshi_resolution == ""
         assert view.polymarket_resolution == ""
+
+
+class TestEventLinks:
+    """Direct links to the tradeable event on each venue.
+
+    The terms document and the event page are different destinations: the
+    reviewer reads the terms to compare rules, but opens the event to see what
+    is actually listed - title, outcomes, the market itself. Conflating them
+    sends the reviewer to a PDF when they wanted the market.
+    """
+
+    def test_the_view_carries_both_event_urls(self) -> None:
+        candidate = replace(
+            proposed(),
+            kalshi=replace(
+                proposed().kalshi,
+                event_url="https://kalshi.com/markets/KXNFLGAME-26SEP10-KC",
+            ),
+            polymarket=replace(
+                proposed().polymarket,
+                event_url="https://polymarket.com/event/chiefs-eagles",
+            ),
+        )
+
+        view = review_pair(candidate)
+
+        assert view.kalshi_event_url == (
+            "https://kalshi.com/markets/KXNFLGAME-26SEP10-KC"
+        )
+        assert view.polymarket_event_url == "https://polymarket.com/event/chiefs-eagles"
+
+    def test_a_missing_event_url_falls_back_to_the_terms_link(self) -> None:
+        """A dead link is worse than a second copy of a working one."""
+        view = review_pair(proposed())
+
+        assert view.kalshi_event_url == "https://kalshi.com/terms/KXNFLGAME"
+        assert view.polymarket_event_url == "https://polymarket.com/rules/0xabc"
