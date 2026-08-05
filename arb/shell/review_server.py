@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import html
+import os
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -29,7 +30,7 @@ from arb.registry import PairStatus, approve, reject, verify_candidate
 from arb.review import PairReview, TermRow, TermStatus, review_pair, review_queue
 from arb.shell.candidates import CandidateStore
 
-__all__ = ["build_handler", "main", "render_page"]
+__all__ = ["build_handler", "build_parser", "main", "render_page"]
 
 DEFAULT_DB = Path("data/live_orderbooks/pair_candidates.sqlite")
 
@@ -208,10 +209,17 @@ def build_handler(
     return ReviewHandler
 
 
-def main(argv: list[str] | None = None) -> None:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Review and approve Matched Pairs.")
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8771)
+    parser.add_argument(
+        "--port",
+        type=int,
+        # A managed launcher assigns a free port through the PORT env var;
+        # honoring it is what stops an orphaned instance from wedging every
+        # later start. An explicit --port still wins for manual runs.
+        default=int(os.environ.get("PORT", "8771")),
+    )
     parser.add_argument("--db", type=Path, default=DEFAULT_DB)
     parser.add_argument(
         "--operator",
@@ -219,7 +227,11 @@ def main(argv: list[str] | None = None) -> None:
         help="Recorded against every decision - the calibration dataset needs "
         "to know who decided.",
     )
-    args = parser.parse_args(argv)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = build_parser().parse_args(argv)
 
     import time
 

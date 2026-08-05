@@ -9,12 +9,11 @@
         "arb.shell.review_server",
         "--host",
         "127.0.0.1",
-        "--port",
-        "8771",
         "--operator",
         "max"
       ],
-      "port": 8771
+      "port": 8771,
+      "autoPort": true
     }
   ]
 }

@@ -23,7 +23,7 @@ import pytest
 
 from arb.registry import PairStatus, approve, verify_candidate
 from arb.shell.candidates import CandidateStore
-from arb.shell.review_server import build_handler, render_page
+from arb.shell.review_server import build_handler, build_parser, render_page
 from arb.review import review_queue
 from tests.test_registry import proposed
 from tests.test_verification import market
@@ -263,3 +263,33 @@ class TestResolutionOnThePage:
         store.save(verify_candidate(proposed()))
 
         assert "No resolution text captured" in get(server)
+
+
+class TestPortSelection:
+    """The port comes from --port, else the PORT env var, else 8771.
+
+    The env var is how a managed launcher assigns a free port; honoring it is
+    what stops an orphaned instance from wedging every later start.
+    """
+
+    def test_the_port_env_var_is_the_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PORT", "9123")
+
+        assert build_parser().parse_args(["--operator", "max"]).port == 9123
+
+    def test_an_explicit_flag_beats_the_env_var(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PORT", "9123")
+
+        args = build_parser().parse_args(["--operator", "max", "--port", "8771"])
+        assert args.port == 8771
+
+    def test_without_either_the_default_is_8771(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("PORT", raising=False)
+
+        assert build_parser().parse_args(["--operator", "max"]).port == 8771
