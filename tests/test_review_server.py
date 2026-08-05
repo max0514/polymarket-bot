@@ -158,10 +158,13 @@ class TestDeciding:
         assert "Decided:" in page
 
 
-class TestTheScreenOffersNoOverride:
-    def test_a_rules_rejected_pair_has_no_approve_button(
+class TestDecidedPairsStayDecided:
+    def test_an_override_is_visibly_an_override_not_a_clean_approve(
         self, server: str, store: CandidateStore
     ) -> None:
+        """The button on a rules-rejected pair must say what it does - a
+        reviewer who cannot tell an override from a clean approve will stop
+        trusting the clean ones."""
         store.save(
             verify_candidate(
                 replace(proposed(), polymarket=market(void_rule="Void never"))
@@ -171,22 +174,8 @@ class TestTheScreenOffersNoOverride:
         page = get(server)
 
         assert "Same pair &mdash; approve" not in page
+        assert "Approve anyway" in page
         assert "The rule layer rejected this pair" in page
-
-    def test_posting_an_approval_anyway_is_refused(
-        self, server: str, store: CandidateStore
-    ) -> None:
-        """A crafted request must not get past the gate the screen hides."""
-        store.save(
-            verify_candidate(
-                replace(proposed(), polymarket=market(void_rule="Void never"))
-            )
-        )
-
-        assert post(server, "/approve", pair_id="nfl-kc") == 409
-
-        still = store.get("nfl-kc")
-        assert still is not None and still.status is PairStatus.REJECTED_BY_RULES
 
     def test_approving_a_pair_twice_is_refused(
         self, server: str, store: CandidateStore
@@ -319,7 +308,7 @@ class TestEventLinksOnThePage:
         assert "View on Kalshi" in page
         assert "View on Polymarket" in page
 
-    def test_the_decision_buttons_sit_in_the_card_header(
+    def test_the_decision_button_sits_in_the_card_header(
         self, server: str, store: CandidateStore
     ) -> None:
         """The first thing on a decidable card is the decision, not the bottom
@@ -331,4 +320,135 @@ class TestEventLinksOnThePage:
         head = card.split('<div class="questions">')[0]
 
         assert "Same pair &mdash; approve" in head
-        assert "Not the same pair" in head
+
+
+class TestOneButtonPerPair:
+    """The redesigned decision model: one approve button on every undecided
+    pair, and not pressing it means rejected.
+
+    Approval is the only explicit act. A pair nobody approves never trades
+    (the registry reads only APPROVED), and the sweep records that outcome so
+    "never looked at" and "looked at and left" both land as rejections instead
+    of sitting awaiting forever.
+    """
+
+    def test_a_decidable_pair_has_exactly_one_button(
+        self, server: str, store: CandidateStore
+    ) -> None:
+        store.save(verify_candidate(proposed()))
+
+        page = get(server)
+        card = page.split('<article class="card">')[1]
+
+        assert card.count("<button") == 1
+        assert "Same pair &mdash; approve" in card
+
+    def test_a_rules_rejected_pair_also_has_one_button_an_override(
+        self, server: str, store: CandidateStore
+    ) -> None:
+        """The user, as operator, can overrule the gate - but the button says
+        what it is doing rather than pretending the rules passed."""
+        store.save(
+            verify_candidate(
+                replace(proposed(), polymarket=market(void_rule="Void never"))
+            )
+        )
+
+        page = get(server)
+        card = page.split('<article class="card">')[1]
+
+        assert card.count("<button") == 1
+        assert "Approve anyway" in card
+
+    def test_overriding_records_which_rules_were_overridden(
+        self, server: str, store: CandidateStore
+    ) -> None:
+        """An override that leaves no trace poisons the calibration dataset -
+        it would look like the rules passed."""
+        store.save(
+            verify_candidate(
+                replace(proposed(), polymarket=market(void_rule="Void never"))
+            )
+        )
+
+        assert post(server, "/approve", pair_id="nfl-kc") == 200
+
+        decided = store.get("nfl-kc")
+        assert decided is not None
+        assert decided.status is PairStatus.APPROVED
+        assert "override" in decided.operator_note
+        assert "divergent_void_rule" in decided.operator_note
+
+    def test_an_overridden_pair_enters_the_registry(
+        self, server: str, store: CandidateStore
+    ) -> None:
+        store.save(
+            verify_candidate(
+                replace(proposed(), polymarket=market(void_rule="Void never"))
+            )
+        )
+
+        post(server, "/approve", pair_id="nfl-kc")
+
+        assert list(store.registry()) == ["nfl-kc"]
+
+    def test_a_clean_approval_records_no_override(
+        self, server: str, store: CandidateStore
+    ) -> None:
+        store.save(verify_candidate(proposed()))
+
+        post(server, "/approve", pair_id="nfl-kc")
+
+        decided = store.get("nfl-kc")
+        assert decided is not None and decided.operator_note == ""
+
+
+class TestNotPressingMeansRejected:
+    def test_the_sweep_rejects_every_unapproved_pair(
+        self, server: str, store: CandidateStore
+    ) -> None:
+        store.save(verify_candidate(proposed()))
+        store.save(verify_candidate(replace(proposed(), pair_id="second-pair")))
+
+        assert post(server, "/reject-unapproved") == 200
+
+        for pair_id in ("nfl-kc", "second-pair"):
+            decided = store.get(pair_id)
+            assert decided is not None
+            assert decided.status is PairStatus.REJECTED_BY_OPERATOR
+            assert decided.operator_note == "not approved"
+
+    def test_the_sweep_leaves_approved_pairs_alone(
+        self, server: str, store: CandidateStore
+    ) -> None:
+        store.save(approve(verify_candidate(proposed()), operator="max", at_ms=1))
+        store.save(verify_candidate(replace(proposed(), pair_id="second-pair")))
+
+        post(server, "/reject-unapproved")
+
+        kept = store.get("nfl-kc")
+        assert kept is not None and kept.status is PairStatus.APPROVED
+        assert list(store.registry()) == ["nfl-kc"]
+
+    def test_the_sweep_leaves_rules_rejected_pairs_as_rules_rejected(
+        self, server: str, store: CandidateStore
+    ) -> None:
+        """Already rejected - and by the rules, not the operator. The sweep
+        must not overwrite who said no."""
+        store.save(
+            verify_candidate(
+                replace(proposed(), polymarket=market(void_rule="Void never"))
+            )
+        )
+
+        post(server, "/reject-unapproved")
+
+        still = store.get("nfl-kc")
+        assert still is not None and still.status is PairStatus.REJECTED_BY_RULES
+
+    def test_the_sweep_button_is_on_the_page(
+        self, server: str, store: CandidateStore
+    ) -> None:
+        store.save(verify_candidate(proposed()))
+
+        assert "Reject all unapproved" in get(server)

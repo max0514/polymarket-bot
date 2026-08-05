@@ -158,8 +158,32 @@ def verify_candidate(candidate: PairCandidate) -> PairCandidate:
     )
 
 
-def approve(candidate: PairCandidate, *, operator: str, at_ms: int) -> PairCandidate:
-    """Operator sign-off, after which the pair trades automatically."""
+def approve(
+    candidate: PairCandidate,
+    *,
+    operator: str,
+    at_ms: int,
+    override_rules: bool = False,
+) -> PairCandidate:
+    """Operator sign-off, after which the pair trades automatically.
+
+    With `override_rules`, a pair the rule layer rejected can still be
+    approved - the operator owns the capital and outranks the gate. The
+    override is stamped into `operator_note` with the exact failures it
+    overrode, because an override that leaves no trace would poison the
+    calibration dataset: it would read as though the rules had passed.
+    """
+    if override_rules and candidate.status is PairStatus.REJECTED_BY_RULES:
+        failures = ",".join(f.value for f in candidate.verdict.failures) if (
+            candidate.verdict
+        ) else "unknown"
+        return replace(
+            candidate,
+            status=PairStatus.APPROVED,
+            operator=operator,
+            operator_note=f"override: approved despite {failures}",
+            decided_at_ms=at_ms,
+        )
     _require(candidate, PairStatus.AWAITING_APPROVAL, "approve")
     return replace(
         candidate,

@@ -34,9 +34,18 @@ __all__ = ["build_handler", "build_parser", "main", "render_page"]
 
 DEFAULT_DB = Path("data/live_orderbooks/pair_candidates.sqlite")
 
-#: Statuses an operator may still act on. Anything else has been settled, by
-#: the rules or by a person, and a second decision would overwrite the first.
-_DECIDABLE = (PairStatus.PROPOSED, PairStatus.AWAITING_APPROVAL)
+#: Statuses an operator may still act on. A rules-rejected pair is included:
+#: the operator can override the gate, and the override is recorded. Anything
+#: already decided by a person stays decided.
+_DECIDABLE = (
+    PairStatus.PROPOSED,
+    PairStatus.AWAITING_APPROVAL,
+    PairStatus.REJECTED_BY_RULES,
+)
+
+#: Statuses the sweep turns into operator rejections. Rules-rejected pairs are
+#: left out - they are already rejected, and by the rules, not the operator.
+_SWEEPABLE = (PairStatus.PROPOSED, PairStatus.AWAITING_APPROVAL)
 
 _STATUS_LABEL = {
     TermStatus.AGREES: "match",
@@ -70,7 +79,7 @@ def _render_card(view: PairReview, operator: str) -> str:
     if view.can_approve:
         controls = _CONTROLS.format(pair_id=html.escape(view.pair_id))
     elif view.blocked_by_rules:
-        controls = _BLOCKED
+        controls = _OVERRIDE.format(pair_id=html.escape(view.pair_id))
     else:
         controls = _DECIDED.format(
             status=html.escape(view.status.value.replace("_", " ")),
@@ -143,6 +152,9 @@ def build_handler(
 
         def do_POST(self) -> None:  # noqa: N802 - stdlib naming
             path = urlparse(self.path).path
+            if path == "/reject-unapproved":
+                self._sweep()
+                return
             if path not in ("/approve", "/reject"):
                 self._send(HTTPStatus.NOT_FOUND, "not found", "text/plain")
                 return
@@ -174,7 +186,18 @@ def build_handler(
 
             try:
                 if path == "/approve":
-                    store.save(approve(candidate, operator=operator, at_ms=now))
+                    store.save(
+                        approve(
+                            candidate,
+                            operator=operator,
+                            at_ms=now,
+                            # An approve on a pair the rules rejected is an
+                            # override; approve() records what was overridden.
+                            override_rules=(
+                                candidate.status is PairStatus.REJECTED_BY_RULES
+                            ),
+                        )
+                    )
                 else:
                     store.save(
                         reject(
@@ -188,6 +211,24 @@ def build_handler(
                 self._send(HTTPStatus.CONFLICT, str(refused), "text/plain")
                 return
 
+            self.send_response(HTTPStatus.SEE_OTHER)
+            self.send_header("Location", "/")
+            self.end_headers()
+
+        def _sweep(self) -> None:
+            """Not pressing the button means rejected - this makes it so."""
+            now = clock()
+            for candidate in store.all():
+                if candidate.status not in _SWEEPABLE:
+                    continue
+                store.save(
+                    reject(
+                        verify_candidate(candidate),
+                        operator=operator,
+                        at_ms=now,
+                        note="not approved",
+                    )
+                )
             self.send_response(HTTPStatus.SEE_OTHER)
             self.send_header("Location", "/")
             self.end_headers()
@@ -352,6 +393,9 @@ button {{ font:inherit; font-weight:650; font-size:.88rem; padding:.55rem 1.15re
   background:var(--panel); color:var(--ink); }}
 button.approve {{ background:var(--ok); border-color:var(--ok); color:#ffffff; }}
 button.reject {{ border-color:var(--bad); color:var(--bad); background:transparent; }}
+button.override {{ background:transparent; border-color:var(--warn); color:var(--warn); }}
+.sweep {{ margin-left:auto; }}
+.chips {{ margin-left:0; }}
 button:hover {{ filter:brightness(1.08); }}
 .hint {{ color:var(--faint); font-size:.84rem; margin:0; }}
 .hint.blocked {{ color:var(--bad); }}
@@ -368,8 +412,13 @@ form {{ display:contents; }}
     <span class="chip awaiting">{pending} awaiting</span>
     <span class="chip">{total} total</span>
   </div>
-  <p class="operator">Deciding as <strong>{operator}</strong>. An approved pair
-  trades automatically; a pair the rules rejected cannot be approved here.</p>
+  <form class="sweep" method="post" action="/reject-unapproved">
+    <button type="submit" class="reject">Reject all unapproved</button>
+  </form>
+  <p class="operator">Deciding as <strong>{operator}</strong>. Approving is the
+  only action: an approved pair trades automatically, and anything you never
+  approve stays out of the registry &mdash; the sweep records those as
+  rejected.</p>
 </header>
 {body}
 </div></body></html>
@@ -423,17 +472,19 @@ _CONTROLS = """<div class="controls">
     <input type="hidden" name="pair_id" value="{pair_id}">
     <button type="submit" class="approve">Same pair &mdash; approve</button>
   </form>
-  <form method="post" action="/reject">
-    <input type="hidden" name="pair_id" value="{pair_id}">
-    <input type="text" name="note" placeholder="Why are these not the same pair?">
-    <button type="submit" class="reject">Not the same pair</button>
-  </form>
+  <p class="hint">Unapproved pairs never trade; the sweep above records them
+    as rejected.</p>
 </div>"""
 
-_BLOCKED = """<div class="controls">
-  <p class="hint blocked">The rule layer rejected this pair, so it cannot be
-    approved here and there is nothing to decide. Fix the terms at source and
-    re-propose.</p>
+_OVERRIDE = """<div class="controls">
+  <form method="post" action="/approve">
+    <input type="hidden" name="pair_id" value="{pair_id}">
+    <button type="submit" class="override">Approve anyway &mdash; overrides
+      the rules</button>
+  </form>
+  <p class="hint blocked">The rule layer rejected this pair. Approving it
+    trades against that verdict, and the override is recorded with the exact
+    failures it overrode.</p>
 </div>"""
 
 _DECIDED = """<div class="controls">
