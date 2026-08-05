@@ -216,7 +216,7 @@ class TestRendering:
 
         page = render_page(views, "max")
 
-        assert "1 awaiting a decision" in page
+        assert "1 awaiting" in page
         assert "2 total" in page
 
     def test_venue_text_is_escaped(self) -> None:
@@ -231,3 +231,35 @@ class TestRendering:
 
         assert "<script>alert" not in page
         assert "&lt;script&gt;" in page
+
+
+class TestResolutionOnThePage:
+    def test_each_venues_resolution_text_is_shown(
+        self, server: str, store: CandidateStore
+    ) -> None:
+        candidate = verify_candidate(proposed())
+        candidate = replace(
+            candidate,
+            kalshi=replace(
+                candidate.kalshi,
+                resolution_text="If the game is cancelled, this market resolves No.",
+            ),
+            polymarket=replace(
+                candidate.polymarket,
+                resolution_text="Resolves to the official NFL result once final.",
+            ),
+        )
+        store.save(candidate)
+
+        page = get(server)
+
+        assert "If the game is cancelled, this market resolves No." in page
+        assert "Resolves to the official NFL result once final." in page
+
+    def test_absent_resolution_text_shows_a_placeholder_not_nothing(
+        self, server: str, store: CandidateStore
+    ) -> None:
+        """Silence must look like silence - an empty panel reads as a bug."""
+        store.save(verify_candidate(proposed()))
+
+        assert "No resolution text captured" in get(server)

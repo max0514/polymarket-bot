@@ -91,6 +91,10 @@ class KalshiSeries:
     title: str
     contract_terms_url: str
     terms: ContractTerms
+    #: The venue's resolution language, verbatim. Never machine-compared - the
+    #: structured fields in `terms` are the comparison - but shown to the
+    #: reviewer, whose job is to catch what the extraction missed.
+    resolution_text: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +103,8 @@ class PolymarketMarket:
     question: str
     resolution_source_url: str
     terms: ContractTerms
+    #: See `KalshiSeries.resolution_text`.
+    resolution_text: str = ""
 
 
 @dataclass(frozen=True, slots=True)

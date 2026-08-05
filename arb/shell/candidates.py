@@ -44,6 +44,8 @@ CREATE TABLE IF NOT EXISTS pair_candidates (
     polymarket_question TEXT NOT NULL,
     polymarket_url TEXT NOT NULL,
     polymarket_terms TEXT NOT NULL,
+    kalshi_resolution_text TEXT NOT NULL DEFAULT '',
+    polymarket_resolution_text TEXT NOT NULL DEFAULT '',
     operator TEXT NOT NULL DEFAULT '',
     operator_note TEXT NOT NULL DEFAULT '',
     decided_at_ms INTEGER,
@@ -72,6 +74,10 @@ class CandidateStore:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
+            # Stores created before a column existed migrate in place, so an
+            # operator's decided pairs survive an upgrade.
+            for column in ("kalshi_resolution_text", "polymarket_resolution_text"):
+                _ensure_column(conn, column)
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -94,8 +100,9 @@ class CandidateStore:
                     kalshi_ticker, kalshi_title, kalshi_url, kalshi_terms,
                     polymarket_id, polymarket_question, polymarket_url,
                     polymarket_terms,
+                    kalshi_resolution_text, polymarket_resolution_text,
                     operator, operator_note, decided_at_ms, settled_identically
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     candidate.pair_id,
@@ -112,6 +119,8 @@ class CandidateStore:
                     candidate.polymarket.question,
                     candidate.polymarket.resolution_source_url,
                     _terms_to_json(candidate.polymarket.terms),
+                    candidate.kalshi.resolution_text,
+                    candidate.polymarket.resolution_text,
                     candidate.operator,
                     candidate.operator_note,
                     candidate.decided_at_ms,
@@ -161,12 +170,14 @@ def _from_row(row: sqlite3.Row) -> PairCandidate:
             title=row["kalshi_title"],
             contract_terms_url=row["kalshi_url"],
             terms=_terms_from_json(row["kalshi_terms"]),
+            resolution_text=row["kalshi_resolution_text"],
         ),
         polymarket=PolymarketMarket(
             condition_id=row["polymarket_id"],
             question=row["polymarket_question"],
             resolution_source_url=row["polymarket_url"],
             terms=_terms_from_json(row["polymarket_terms"]),
+            resolution_text=row["polymarket_resolution_text"],
         ),
         category=row["category"],
         settlement_date=row["settlement_date"],
@@ -178,6 +189,16 @@ def _from_row(row: sqlite3.Row) -> PairCandidate:
         decided_at_ms=row["decided_at_ms"],
         settled_identically=_unflag(row["settled_identically"]),
     )
+
+
+def _ensure_column(conn: sqlite3.Connection, column: str) -> None:
+    present = {
+        row["name"] for row in conn.execute("PRAGMA table_info(pair_candidates)")
+    }
+    if column not in present:
+        conn.execute(
+            f"ALTER TABLE pair_candidates ADD COLUMN {column} TEXT NOT NULL DEFAULT ''"
+        )
 
 
 def _flag(value: bool | None) -> int | None:

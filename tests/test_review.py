@@ -216,3 +216,41 @@ class TestOperatorLine:
         assert review_pair(decided).operator_line() == (
             " by max - different box score feed"
         )
+
+
+class TestResolutionText:
+    """The full resolution language, verbatim, from each venue.
+
+    The term rows are the machine's parse of the rules. The reviewer's job is
+    to catch what the parse missed, and they can only do that against the
+    original text - a diff of extracted fields cannot flag a clause the
+    extraction dropped.
+    """
+
+    def test_the_view_carries_both_venues_resolution_text(self) -> None:
+        candidate = replace(
+            proposed(),
+            kalshi=replace(
+                proposed().kalshi,
+                resolution_text="If the game is cancelled, the market resolves No.",
+            ),
+            polymarket=replace(
+                proposed().polymarket,
+                resolution_text="This market resolves to the official NFL result.",
+            ),
+        )
+
+        view = review_pair(candidate)
+
+        assert view.kalshi_resolution == (
+            "If the game is cancelled, the market resolves No."
+        )
+        assert view.polymarket_resolution == (
+            "This market resolves to the official NFL result."
+        )
+
+    def test_missing_resolution_text_is_the_empty_string_not_a_crash(self) -> None:
+        view = review_pair(proposed())
+
+        assert view.kalshi_resolution == ""
+        assert view.polymarket_resolution == ""

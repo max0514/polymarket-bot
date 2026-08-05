@@ -78,6 +78,8 @@ def _render_card(view: PairReview, operator: str) -> str:
 
     return _CARD.format(
         pair_id=html.escape(view.pair_id),
+        kalshi_resolution=_resolution_html(view.kalshi_resolution),
+        polymarket_resolution=_resolution_html(view.polymarket_resolution),
         category=html.escape(view.category),
         settlement_date=html.escape(view.settlement_date),
         confidence=html.escape(view.model_confidence),
@@ -92,6 +94,18 @@ def _render_card(view: PairReview, operator: str) -> str:
         rows=rows,
         controls=controls,
     )
+
+
+def _resolution_html(text: str) -> str:
+    """The venue's resolution language, or an explicit placeholder.
+
+    Silence has to look like silence: an empty panel reads as a rendering bug,
+    and a reviewer who assumes the text was checked when it was never captured
+    is approving on less evidence than they think.
+    """
+    if not text.strip():
+        return '<p class="res-missing">No resolution text captured for this venue.</p>'
+    return f'<p class="res-text">{html.escape(text)}</p>'
 
 
 def _render_row(row: TermRow) -> str:
@@ -227,76 +241,118 @@ _SHELL = """<!doctype html>
 <title>Pair review</title>
 <style>
 :root {{
-  --ground:#f7f8f8; --panel:#fff; --rule:#d5dbdb; --soft:#e4e9e9;
+  color-scheme: light;
+  --ground:#f7f8f8; --panel:#ffffff; --sunk:#eef1f1; --rule:#d5dbdb; --soft:#e4e9e9;
   --ink:#12201f; --dim:#4a5b5a; --faint:#748584;
-  --ok:#2f6b3f; --bad:#963b3b; --warn:#8a6410; --accent:#17605c;
+  --ok:#2f6b3f; --bad:#963b3b; --warn:#8a6410;
+  --accent:#17605c; --accent-soft:#dceceb;
+  --kalshi:#17605c; --polymarket:#9a5b33;
+  --shadow:0 1px 2px rgba(18,32,31,.05), 0 10px 28px -18px rgba(18,32,31,.35);
 }}
 @media (prefers-color-scheme: dark) {{
   :root {{
-    --ground:#0d1615; --panel:#141f1e; --rule:#263736; --soft:#1d2c2b;
+    color-scheme: dark;
+    --ground:#0d1615; --panel:#141f1e; --sunk:#101a19; --rule:#263736; --soft:#1d2c2b;
     --ink:#e2eae9; --dim:#a3b5b3; --faint:#708381;
-    --ok:#6fbe84; --bad:#e08585; --warn:#d9ab54; --accent:#5fbdb5;
+    --ok:#6fbe84; --bad:#e08585; --warn:#d9ab54;
+    --accent:#5fbdb5; --accent-soft:#17302e;
+    --kalshi:#5fbdb5; --polymarket:#cf9366;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 10px 28px -18px rgba(0,0,0,.8);
   }}
 }}
 * {{ box-sizing:border-box; }}
 body {{ margin:0; background:var(--ground); color:var(--ink);
-  font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }}
-.wrap {{ max-width:1000px; margin:0 auto; padding:2rem 1.25rem 5rem; }}
-header {{ border-bottom:1px solid var(--rule); padding-bottom:1.25rem; margin-bottom:2rem; }}
-h1 {{ font-family:ui-serif,Georgia,serif; font-size:1.9rem; margin:0 0 .35rem;
-  font-weight:600; letter-spacing:-.02em; }}
-.sub {{ color:var(--dim); margin:0; font-size:.92rem; }}
-.card {{ background:var(--panel); border:1px solid var(--rule); border-radius:5px;
-  margin-bottom:1.75rem; overflow:hidden; }}
-.card > .head {{ padding:1.1rem 1.25rem; border-bottom:1px solid var(--soft); }}
-.pair-id {{ font-family:ui-monospace,Menlo,monospace; font-size:1.02rem;
-  font-weight:600; }}
-.meta {{ color:var(--faint); font-size:.82rem; margin-top:.2rem; }}
-.questions {{ display:grid; gap:.6rem; padding:1rem 1.25rem;
+  font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  -webkit-font-smoothing:antialiased; }}
+.wrap {{ max-width:1060px; margin:0 auto; padding:2.2rem 1.25rem 5rem; }}
+header {{ display:flex; flex-wrap:wrap; align-items:baseline; gap:.75rem 1.5rem;
+  border-bottom:1px solid var(--rule); padding-bottom:1.3rem; margin-bottom:2rem; }}
+h1 {{ font-family:ui-serif,Georgia,"Iowan Old Style",serif; font-size:2rem;
+  margin:0; font-weight:600; letter-spacing:-.02em; }}
+.chips {{ display:flex; flex-wrap:wrap; gap:.45rem; margin-left:auto; }}
+.chip {{ font-size:.74rem; font-weight:650; letter-spacing:.04em; padding:.22rem .65rem;
+  border-radius:999px; border:1px solid var(--rule); color:var(--dim);
+  background:var(--panel); font-variant-numeric:tabular-nums; }}
+.chip.awaiting {{ color:var(--accent); border-color:var(--accent);
+  background:var(--accent-soft); }}
+.operator {{ width:100%; color:var(--faint); font-size:.85rem; }}
+.card {{ background:var(--panel); border:1px solid var(--rule); border-radius:6px;
+  margin-bottom:2rem; overflow:hidden; box-shadow:var(--shadow); }}
+.card > .head {{ display:flex; flex-wrap:wrap; align-items:baseline; gap:.3rem 1rem;
+  padding:1.05rem 1.3rem .95rem; border-bottom:1px solid var(--soft); }}
+.pair-id {{ font-family:ui-monospace,Menlo,monospace; font-size:1.05rem; font-weight:600; }}
+.meta {{ color:var(--faint); font-size:.82rem; }}
+.questions {{ display:grid; gap:1rem; padding:1.05rem 1.3rem;
   border-bottom:1px solid var(--soft); }}
-@media (min-width:760px) {{ .questions {{ grid-template-columns:1fr 1fr; gap:1.5rem; }} }}
+@media (min-width:760px) {{ .questions {{ grid-template-columns:1fr 1fr; gap:1.6rem; }} }}
+.venue {{ border-top:3px solid var(--rule); padding-top:.55rem; }}
+.venue.k {{ border-top-color:var(--kalshi); }}
+.venue.p {{ border-top-color:var(--polymarket); }}
 .venue h3 {{ font-size:.68rem; letter-spacing:.13em; text-transform:uppercase;
-  color:var(--faint); margin:0 0 .3rem; font-weight:600; }}
-.venue p {{ margin:0 0 .3rem; }}
-.venue a {{ color:var(--accent); font-size:.85rem;
+  margin:0 0 .3rem; font-weight:700; }}
+.venue.k h3 {{ color:var(--kalshi); }}
+.venue.p h3 {{ color:var(--polymarket); }}
+.venue .q {{ margin:0 0 .35rem; font-weight:600; }}
+.venue a {{ color:var(--accent); font-size:.83rem;
   font-family:ui-monospace,Menlo,monospace; }}
-.verdict {{ padding:.7rem 1.25rem; font-size:.88rem; font-weight:600;
+.verdict {{ padding:.7rem 1.3rem; font-size:.88rem; font-weight:650;
   border-bottom:1px solid var(--soft); }}
 .verdict.ok {{ color:var(--ok); }}
 .verdict.bad {{ color:var(--bad); }}
-table {{ width:100%; border-collapse:collapse; font-size:.88rem; }}
-th,td {{ text-align:left; padding:.5rem .75rem; border-bottom:1px solid var(--soft);
-  vertical-align:top; }}
+.section-label {{ font-size:.66rem; letter-spacing:.13em; text-transform:uppercase;
+  color:var(--faint); font-weight:700; padding:.9rem 1.3rem .35rem; }}
+.tablewrap {{ overflow-x:auto; }}
+table {{ width:100%; border-collapse:collapse; font-size:.88rem; min-width:640px; }}
+th,td {{ text-align:left; padding:.5rem 1.3rem .5rem 0; vertical-align:top;
+  border-bottom:1px solid var(--soft); }}
+th:first-child, td:first-child {{ padding-left:1.3rem; }}
 th {{ font-size:.66rem; letter-spacing:.1em; text-transform:uppercase;
   color:var(--faint); font-weight:600; }}
 td.term {{ font-weight:600; white-space:nowrap; }}
 tr.differs td {{ background:color-mix(in srgb, var(--bad) 9%, transparent); }}
 tr.unstated td {{ background:color-mix(in srgb, var(--warn) 11%, transparent); }}
-.badge {{ font-size:.66rem; letter-spacing:.06em; text-transform:uppercase;
-  font-weight:700; padding:.1rem .4rem; border-radius:2px; white-space:nowrap; }}
+.badge {{ font-size:.64rem; letter-spacing:.06em; text-transform:uppercase;
+  font-weight:700; white-space:nowrap; }}
 tr.agrees .badge {{ color:var(--ok); }}
 tr.differs .badge {{ color:var(--bad); }}
 tr.unstated .badge {{ color:var(--warn); }}
-.controls {{ padding:1rem 1.25rem; display:flex; gap:.65rem; align-items:center;
+.resolution {{ display:grid; gap:1rem; padding:.4rem 1.3rem 1.1rem;
+  border-bottom:1px solid var(--soft); }}
+@media (min-width:760px) {{ .resolution {{ grid-template-columns:1fr 1fr; gap:1.6rem; }} }}
+.res-col h4 {{ font-size:.66rem; letter-spacing:.13em; text-transform:uppercase;
+  margin:.4rem 0 .35rem; font-weight:700; }}
+.res-col.k h4 {{ color:var(--kalshi); }}
+.res-col.p h4 {{ color:var(--polymarket); }}
+.res-text {{ margin:0; background:var(--sunk); border:1px solid var(--soft);
+  border-radius:4px; padding:.7rem .85rem; font-size:.86rem; line-height:1.55;
+  white-space:pre-wrap; max-height:14rem; overflow-y:auto; }}
+.res-missing {{ margin:0; color:var(--warn); font-size:.85rem; font-style:italic;
+  border:1px dashed var(--rule); border-radius:4px; padding:.7rem .85rem; }}
+.controls {{ padding:1rem 1.3rem; display:flex; gap:.65rem; align-items:center;
   flex-wrap:wrap; }}
-button {{ font:inherit; font-weight:600; font-size:.88rem; padding:.5rem 1.1rem;
+button {{ font:inherit; font-weight:650; font-size:.88rem; padding:.55rem 1.15rem;
   border-radius:4px; border:1px solid var(--rule); cursor:pointer;
   background:var(--panel); color:var(--ink); }}
-button.approve {{ background:var(--ok); border-color:var(--ok); color:var(--panel); }}
-button.reject {{ border-color:var(--bad); color:var(--bad); }}
-button:hover {{ filter:brightness(1.07); }}
+button.approve {{ background:var(--ok); border-color:var(--ok); color:#ffffff; }}
+button.reject {{ border-color:var(--bad); color:var(--bad); background:transparent; }}
+button:hover {{ filter:brightness(1.08); }}
 .hint {{ color:var(--faint); font-size:.84rem; margin:0; }}
 .hint.blocked {{ color:var(--bad); }}
-input[type=text] {{ font:inherit; font-size:.88rem; padding:.45rem .6rem; flex:1 1 15rem;
-  border:1px solid var(--rule); border-radius:4px; background:var(--ground);
-  color:var(--ink); }}
+input[type=text] {{ font:inherit; font-size:.88rem; padding:.5rem .65rem;
+  flex:1 1 15rem; border:1px solid var(--rule); border-radius:4px;
+  background:var(--ground); color:var(--ink); }}
 form {{ display:contents; }}
 :focus-visible {{ outline:2px solid var(--accent); outline-offset:2px; }}
+@media (prefers-reduced-motion: reduce) {{ * {{ transition:none !important; }} }}
 </style></head><body><div class="wrap">
 <header>
   <h1>Pair review</h1>
-  <p class="sub">{pending} awaiting a decision &middot; {total} total &middot;
-    deciding as <strong>{operator}</strong></p>
+  <div class="chips">
+    <span class="chip awaiting">{pending} awaiting</span>
+    <span class="chip">{total} total</span>
+  </div>
+  <p class="operator">Deciding as <strong>{operator}</strong>. An approved pair
+  trades automatically; a pair the rules rejected cannot be approved here.</p>
 </header>
 {body}
 </div></body></html>
@@ -307,27 +363,33 @@ _EMPTY = """<p class="hint">No candidates yet. Propose some with
 
 _CARD = """<article class="card">
   <div class="head">
-    <div class="pair-id">{pair_id}</div>
-    <div class="meta">{category} &middot; settles {settlement_date} &middot;
-      model confidence {confidence}</div>
+    <span class="pair-id">{pair_id}</span>
+    <span class="meta">{category} &middot; settles {settlement_date} &middot;
+      model confidence {confidence}</span>
   </div>
   <div class="questions">
-    <div class="venue">
+    <div class="venue k">
       <h3>Kalshi &middot; {kalshi_ticker}</h3>
-      <p>{kalshi_question}</p>
-      <a href="{kalshi_url}" rel="noreferrer noopener" target="_blank">contract terms</a>
+      <p class="q">{kalshi_question}</p>
+      <a href="{kalshi_url}" rel="noreferrer noopener" target="_blank">contract terms &#8599;</a>
     </div>
-    <div class="venue">
+    <div class="venue p">
       <h3>Polymarket &middot; {polymarket_id}</h3>
-      <p>{polymarket_question}</p>
-      <a href="{polymarket_url}" rel="noreferrer noopener" target="_blank">resolution rules</a>
+      <p class="q">{polymarket_question}</p>
+      <a href="{polymarket_url}" rel="noreferrer noopener" target="_blank">resolution rules &#8599;</a>
     </div>
   </div>
   <div class="verdict {verdict_class}">{verdict_text}</div>
-  <table>
+  <div class="section-label">Terms, machine-compared</div>
+  <div class="tablewrap"><table>
     <thead><tr><th>Term</th><th>Kalshi</th><th>Polymarket</th><th></th></tr></thead>
     <tbody>{rows}</tbody>
-  </table>
+  </table></div>
+  <div class="section-label">Resolution, verbatim</div>
+  <div class="resolution">
+    <div class="res-col k"><h4>Kalshi says</h4>{kalshi_resolution}</div>
+    <div class="res-col p"><h4>Polymarket says</h4>{polymarket_resolution}</div>
+  </div>
   {controls}
 </article>"""
 

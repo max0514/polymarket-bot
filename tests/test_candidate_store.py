@@ -116,3 +116,44 @@ class TestTheRegistryItFeeds:
 
     def test_an_empty_store_yields_an_empty_registry(self, tmp_path: Path) -> None:
         assert CandidateStore(tmp_path / "pairs.sqlite").registry() == {}
+
+
+class TestResolutionTextPersists:
+    def test_resolution_text_survives_the_round_trip(self, tmp_path: Path) -> None:
+        store = CandidateStore(tmp_path / "pairs.sqlite")
+        candidate = replace(
+            proposed(),
+            kalshi=replace(
+                proposed().kalshi, resolution_text="Cancelled games resolve No."
+            ),
+        )
+        store.save(candidate)
+
+        restored = store.get("nfl-kc")
+
+        assert restored is not None
+        assert restored.kalshi.resolution_text == "Cancelled games resolve No."
+        assert restored.polymarket.resolution_text == ""
+
+    def test_a_store_created_before_the_column_existed_still_opens(
+        self, tmp_path: Path
+    ) -> None:
+        """Schema migration: candidate DBs already exist on disk."""
+        import sqlite3
+
+        path = tmp_path / "pairs.sqlite"
+        # Build the store, then strip the new columns to simulate an old file.
+        CandidateStore(path)
+        conn = sqlite3.connect(path)
+        conn.executescript(
+            "ALTER TABLE pair_candidates DROP COLUMN kalshi_resolution_text;"
+            "ALTER TABLE pair_candidates DROP COLUMN polymarket_resolution_text;"
+        )
+        conn.commit()
+        conn.close()
+
+        store = CandidateStore(path)
+        store.save(proposed())
+
+        restored = store.get("nfl-kc")
+        assert restored is not None and restored.kalshi.resolution_text == ""

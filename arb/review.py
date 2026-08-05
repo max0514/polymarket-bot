@@ -83,6 +83,10 @@ class PairReview:
     verified: bool
     failures: tuple[Failure, ...]
     rows: tuple[TermRow, ...]
+    #: Each venue's resolution language, verbatim, for the reviewer to read
+    #: against the parsed rows. Empty when it was not captured.
+    kalshi_resolution: str = ""
+    polymarket_resolution: str = ""
     operator: str = ""
     operator_note: str = ""
 
@@ -168,6 +172,8 @@ def review_pair(candidate: PairCandidate) -> PairReview:
         verified=verdict.verified,
         failures=verdict.failures,
         rows=rows,
+        kalshi_resolution=candidate.kalshi.resolution_text,
+        polymarket_resolution=candidate.polymarket.resolution_text,
         operator=candidate.operator,
         operator_note=candidate.operator_note,
     )
