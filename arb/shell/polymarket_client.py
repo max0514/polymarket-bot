@@ -1,11 +1,11 @@
 """Polymarket: gamma REST listings and the public CLOB market websocket.
 
-This sandbox cannot reach Polymarket at all, so unlike the Kalshi client
-nothing here has run against the live venue - it is written to the documented
-API shapes, tested on fixtures, and deliberately defensive: any frame or row
-that does not parse is logged and skipped, never raised. The first live run
-happens on the operator's machine, and a wrong assumption should cost one log
-line there, not the collection run.
+The gamma listing fetch has run against the live venue (2026-08-06); the
+websocket half still has not - it is written to the documented API shapes,
+tested on fixtures, and deliberately defensive: any frame or row that does
+not parse is logged and skipped, never raised. Its first live run happens on
+the operator's machine, and a wrong assumption should cost one log line
+there, not the collection run.
 
 Book upkeep mirrors the Kalshi client: pure `(state, frame) -> (state,
 payload | None)`, payload in exactly the shape `polymarket_snapshot` accepts.
@@ -36,20 +36,49 @@ BookState: TypeAlias = dict[str, dict[str, Any]]
 BookPayload: TypeAlias = tuple[str, dict[str, Any]]
 
 
+#: Gamma serves at most this many events per request regardless of `limit`,
+#: so listing is a paged walk, not one call.
+_GAMMA_PAGE_SIZE = 100
+
+#: Refusing to walk forever if gamma keeps returning full pages; 50 pages is
+#: 5000 open MLB events - far beyond a real season's listing.
+_GAMMA_MAX_PAGES = 50
+
+
 def fetch_mlb_events(*, timeout_s: float = 15.0) -> list[dict[str, Any]]:
-    """Open MLB events from gamma.
+    """Open MLB events from gamma, walking every page.
 
     `tag_slug=mlb` is the documented filter; if the tag taxonomy differs in
     practice, the matcher's own slug check (`mlb-` prefix) still keeps foreign
     events out - this filter is bandwidth, not correctness.
     """
-    url = f"{GAMMA_API_BASE}/events?closed=false&limit=300&tag_slug=mlb"
-    with urllib.request.urlopen(url, timeout=timeout_s) as response:
-        payload = json.loads(response.read().decode("utf-8"))
-    if not isinstance(payload, list):
-        logger.warning("gamma events response was not a list; treating as empty")
-        return []
-    return [event for event in payload if isinstance(event, dict)]
+    events: list[dict[str, Any]] = []
+    for page in range(_GAMMA_MAX_PAGES):
+        url = (
+            f"{GAMMA_API_BASE}/events?closed=false&limit={_GAMMA_PAGE_SIZE}"
+            f"&tag_slug=mlb&offset={page * _GAMMA_PAGE_SIZE}"
+        )
+        # Gamma's CDN answers 403 to urllib's default "Python-urllib" agent,
+        # so the fetch must say who it is.
+        request = urllib.request.Request(
+            url, headers={"User-Agent": "arb-collector/1.0"}
+        )
+        with urllib.request.urlopen(request, timeout=timeout_s) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        if not isinstance(payload, list):
+            logger.warning("gamma events response was not a list; treating as empty")
+            break
+        events.extend(event for event in payload if isinstance(event, dict))
+        if len(payload) < _GAMMA_PAGE_SIZE:
+            return events
+    else:
+        logger.warning(
+            "gamma listing still returning full pages after %d pages; "
+            "events beyond offset %d were not fetched",
+            _GAMMA_MAX_PAGES,
+            _GAMMA_MAX_PAGES * _GAMMA_PAGE_SIZE,
+        )
+    return events
 
 
 def subscribe_command(token_ids: list[str]) -> str:

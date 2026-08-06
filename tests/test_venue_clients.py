@@ -12,7 +12,9 @@ runnable anywhere.
 from __future__ import annotations
 
 import base64
+import json
 import urllib.error
+import urllib.request
 from decimal import Decimal
 
 import pytest
@@ -27,6 +29,7 @@ from arb.shell.normalise import kalshi_snapshot, polymarket_snapshot
 from arb.shell.polymarket_client import (
     BookState as PolymarketBooks,
     apply_polymarket_message,
+    fetch_mlb_events,
 )
 
 
@@ -235,3 +238,70 @@ class TestKalshiRestLive:
             assert "ticker" in sample
             assert "event_ticker" in sample
             assert "rules_primary" in sample
+
+
+class TestGammaRestPagination:
+    def test_collects_every_page_not_just_the_first(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Gamma silently caps a page at 100 events; games live past page one.
+
+        Two fake pages: a full one (100 events), then a short one (1 event).
+        A fetch that stops after one request returns 100 and loses the game
+        events - the real 2026-08-06 failure, where every single-game event
+        sat beyond offset 100.
+        """
+        pages = [
+            [{"slug": f"mlb-award-{i}"} for i in range(100)],
+            [{"slug": "mlb-det-sf-2026-08-08"}],
+        ]
+        requested_urls: list[str] = []
+
+        class _Response:
+            def __init__(self, body: bytes) -> None:
+                self._body = body
+
+            def read(self) -> bytes:
+                return self._body
+
+            def __enter__(self) -> "_Response":
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                return None
+
+        def fake_urlopen(request: urllib.request.Request, timeout: float) -> _Response:
+            requested_urls.append(request.full_url)
+            page = pages.pop(0) if pages else []
+            return _Response(json.dumps(page).encode("utf-8"))
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+        events = fetch_mlb_events()
+
+        assert len(events) == 101
+        assert events[-1]["slug"] == "mlb-det-sf-2026-08-08"
+        assert "offset=0" in requested_urls[0]
+        assert "offset=100" in requested_urls[1]
+
+
+class TestGammaRestLive:
+    def test_fetches_real_open_mlb_events(self) -> None:
+        """Live against gamma; a rejected request (403) is a failure, not a skip.
+
+        Gamma's CDN blocks the default `Python-urllib` user agent, so this
+        pins that our fetch identifies itself acceptably. Only a genuinely
+        unreachable network skips.
+        """
+        try:
+            events = fetch_mlb_events()
+        except urllib.error.HTTPError:
+            raise  # reachable but rejected - the client is at fault
+        except (urllib.error.URLError, OSError) as error:
+            pytest.skip(f"gamma API unreachable: {error}")
+
+        assert isinstance(events, list)
+        if events:  # the season could, in principle, be over
+            sample = events[0]
+            assert "slug" in sample
+            assert "markets" in sample
