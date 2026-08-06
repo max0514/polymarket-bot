@@ -137,6 +137,12 @@ class Verdict:
 #: fail closed - turning the operator override into the normal path and
 #: destroying its signal. One-sided silence still rejects, and stated-but-
 #: different still rejects, on every field.
+#:
+#: MLB-ONLY ASSUMPTION, confirmed by the operator (2026-08-06): this global
+#: relaxation is safe because the collected universe is MLB, where ties do not
+#: exist. Before adding a league where they do (NFL regular-season games can
+#: tie), make optionality category-aware - mutual silence on tie-break for an
+#: NFL pair would be a real unchecked gap, not inapplicability.
 _COMPARED_FIELDS: tuple[tuple[str, Failure, Failure, bool], ...] = (
     (
         "settlement_source",
