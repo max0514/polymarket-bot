@@ -145,12 +145,34 @@ class TestUnverifiableTerms:
         assert verdict.verified is False
         assert Failure.UNVERIFIABLE_VOID_RULE in verdict.failures
 
-    def test_a_field_missing_on_both_sides_still_rejects(self) -> None:
-        """Two silences are not a match either - nothing was checked."""
-        verdict = verify(series(overtime_rule=None), market(overtime_rule=None))
+    def test_a_core_field_missing_on_both_sides_still_rejects(self) -> None:
+        """Two silences on a core field are not a match - nothing was checked,
+        and a pair with no stated settlement source must never trade."""
+        verdict = verify(
+            series(settlement_source=None), market(settlement_source=None)
+        )
 
         assert verdict.verified is False
-        assert Failure.UNVERIFIABLE_OVERTIME_RULE in verdict.failures
+        assert Failure.UNVERIFIABLE_SETTLEMENT_SOURCE in verdict.failures
+
+    def test_mutual_silence_on_an_inapplicability_field_passes(self) -> None:
+        """Baseball cannot tie and extra innings are part of the result, so
+        neither venue states those rules. Mutual silence there is agreement by
+        inapplicability - one-sided silence still rejects (see below)."""
+        verdict = verify(
+            series(overtime_rule=None, tie_break_rule=None),
+            market(overtime_rule=None, tie_break_rule=None),
+        )
+
+        assert verdict.verified is True
+
+    def test_one_sided_silence_on_an_inapplicability_field_still_rejects(
+        self,
+    ) -> None:
+        verdict = verify(series(), market(tie_break_rule=None))
+
+        assert verdict.verified is False
+        assert Failure.UNVERIFIABLE_TIE_BREAK_RULE in verdict.failures
 
     def test_an_empty_string_counts_as_unstated(self) -> None:
         verdict = verify(series(), market(settlement_source="   "))

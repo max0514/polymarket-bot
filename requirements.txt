@@ -1,4 +1,8 @@
-# The arb package has no runtime dependencies outside the standard library.
+# Runtime dependencies of the collector daemon (arb.shell.collect):
+websockets>=12    # both venues' orderbook feeds
+cryptography>=42  # Kalshi websocket request signing (RSA-PSS)
+
+# The decision core itself (arb/) is standard-library only.
 # Development tooling:
 pytest>=8
 mypy>=1.14

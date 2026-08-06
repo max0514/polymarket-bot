@@ -25,6 +25,7 @@ from typing import Iterable, Sequence
 
 from arb.registry import PairCandidate, PairStatus
 from arb.verification import (
+    OPTIONAL_FIELDS,
     ContractTerms,
     Failure,
     Verdict,
@@ -214,6 +215,18 @@ def _term_row(
 ) -> TermRow:
     left = getattr(kalshi, field)
     right = getattr(polymarket, field)
+    if left is None and right is None and field in OPTIONAL_FIELDS:
+        # Mutual silence on an inapplicability field passes the gate, so the
+        # row must read as agreement - a warning row the gate ignores would
+        # teach the reviewer that warnings mean nothing.
+        placeholder = "not stated - treated as not applicable"
+        return TermRow(
+            field=field,
+            label=label,
+            kalshi=placeholder,
+            polymarket=placeholder,
+            status=TermStatus.AGREES,
+        )
     return TermRow(
         field=field,
         label=label,

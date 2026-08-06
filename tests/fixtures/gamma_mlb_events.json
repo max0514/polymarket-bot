@@ -1,0 +1,77 @@
+[
+  {
+    "id": "901001",
+    "slug": "mlb-lad-az-2026-08-08",
+    "title": "Dodgers vs. Diamondbacks",
+    "startDate": "2026-08-09T00:10:00Z",
+    "markets": [
+      {
+        "conditionId": "0xlad_az_condition",
+        "question": "Dodgers vs. Diamondbacks",
+        "description": "This market will resolve to the winner of the MLB game between the Los Angeles Dodgers and Arizona Diamondbacks scheduled for August 8, 2026. If the game is postponed, this market will remain open until the game is completed. If the game is canceled entirely, with no make-up game, this market will resolve 50-50.",
+        "outcomes": "[\"Dodgers\", \"Diamondbacks\"]",
+        "clobTokenIds": "[\"11111111111111111111\", \"22222222222222222222\"]"
+      }
+    ]
+  },
+  {
+    "id": "901002",
+    "slug": "mlb-det-sf-2026-08-08",
+    "title": "Tigers vs. Giants",
+    "startDate": "2026-08-08T23:15:00Z",
+    "markets": [
+      {
+        "conditionId": "0xdet_sf_condition",
+        "question": "Tigers vs. Giants",
+        "description": "This market will resolve to the winner of the MLB game between the Detroit Tigers and San Francisco Giants scheduled for August 8, 2026.",
+        "outcomes": "[\"Tigers\", \"Giants\"]",
+        "clobTokenIds": "[\"33333333333333333333\", \"44444444444444444444\"]"
+      }
+    ]
+  },
+  {
+    "id": "901003",
+    "slug": "mlb-lad-az-2026-08-20",
+    "title": "Dodgers vs. Diamondbacks",
+    "startDate": "2026-08-21T00:10:00Z",
+    "markets": [
+      {
+        "conditionId": "0xwrong_date_condition",
+        "question": "Dodgers vs. Diamondbacks",
+        "description": "A later game between the same teams - must not match Aug 8 markets.",
+        "outcomes": "[\"Dodgers\", \"Diamondbacks\"]",
+        "clobTokenIds": "[\"55555555555555555555\", \"66666666666666666666\"]"
+      }
+    ]
+  },
+  {
+    "id": "901004",
+    "slug": "kbo-lg-doosan-2026-08-08",
+    "title": "LG Twins vs. Doosan Bears",
+    "startDate": "2026-08-08T09:00:00Z",
+    "markets": [
+      {
+        "conditionId": "0xunknown_league",
+        "question": "LG Twins vs. Doosan Bears",
+        "description": "Not an MLB team pair - the matcher must skip it, not crash.",
+        "outcomes": "[\"LG Twins\", \"Doosan Bears\"]",
+        "clobTokenIds": "[\"77777777777777777777\", \"88888888888888888888\"]"
+      }
+    ]
+  },
+  {
+    "id": "901005",
+    "slug": "mlb-nyy-bos-2026-08-08",
+    "title": "Yankees vs. Red Sox",
+    "startDate": "2026-08-08T23:05:00Z",
+    "markets": [
+      {
+        "conditionId": "0xmalformed",
+        "question": "Yankees vs. Red Sox",
+        "description": "clobTokenIds count disagrees with outcomes - must be skipped, not crash.",
+        "outcomes": "[\"Yankees\", \"Red Sox\"]",
+        "clobTokenIds": "[\"99999999999999999999\"]"
+      }
+    ]
+  }
+]

@@ -28,6 +28,7 @@ __all__ = [
     "Failure",
     "KalshiSeries",
     "PolymarketMarket",
+    "OPTIONAL_FIELDS",
     "Verdict",
     "normalise_term",
     "verify",
@@ -124,37 +125,57 @@ class Verdict:
         }
 
 
-#: Fields compared one for one, with the failure raised for each outcome.
-#: Declared as data so that adding a term to the comparison is one line and
-#: cannot accidentally skip either the unstated check or the equality check.
-_COMPARED_FIELDS: tuple[tuple[str, Failure, Failure], ...] = (
+#: Fields compared one for one, with the failure raised for each outcome and
+#: whether silence on BOTH sides is tolerable. Declared as data so that adding
+#: a term is one line and cannot skip either check.
+#:
+#: The `required` flag is a deliberate refinement of the original blanket
+#: rule. For core fields, mutual silence means nothing was checked and the
+#: pair rejects. For overtime and tie-break, mutual silence usually means the
+#: concept does not exist in the sport (baseball cannot tie; extra innings are
+#: simply part of the result), and rejecting on it would make every real pair
+#: fail closed - turning the operator override into the normal path and
+#: destroying its signal. One-sided silence still rejects, and stated-but-
+#: different still rejects, on every field.
+_COMPARED_FIELDS: tuple[tuple[str, Failure, Failure, bool], ...] = (
     (
         "settlement_source",
         Failure.UNVERIFIABLE_SETTLEMENT_SOURCE,
         Failure.DIVERGENT_SETTLEMENT_SOURCE,
+        True,
     ),
     (
         "settling_release",
         Failure.UNVERIFIABLE_SETTLING_RELEASE,
         Failure.DIVERGENT_SETTLING_RELEASE,
+        True,
     ),
-    ("void_rule", Failure.UNVERIFIABLE_VOID_RULE, Failure.DIVERGENT_VOID_RULE),
+    ("void_rule", Failure.UNVERIFIABLE_VOID_RULE, Failure.DIVERGENT_VOID_RULE, True),
     (
         "postponement_rule",
         Failure.UNVERIFIABLE_POSTPONEMENT_RULE,
         Failure.DIVERGENT_POSTPONEMENT_RULE,
+        True,
     ),
     (
         "overtime_rule",
         Failure.UNVERIFIABLE_OVERTIME_RULE,
         Failure.DIVERGENT_OVERTIME_RULE,
+        False,
     ),
-    ("threshold", Failure.UNVERIFIABLE_THRESHOLD, Failure.DIVERGENT_THRESHOLD),
+    ("threshold", Failure.UNVERIFIABLE_THRESHOLD, Failure.DIVERGENT_THRESHOLD, True),
     (
         "tie_break_rule",
         Failure.UNVERIFIABLE_TIE_BREAK_RULE,
         Failure.DIVERGENT_TIE_BREAK_RULE,
+        False,
     ),
+)
+
+#: Field names where mutual silence passes - shared with the review view so
+#: the screen and the gate cannot disagree about what a blank row means.
+OPTIONAL_FIELDS: frozenset[str] = frozenset(
+    name for name, _, _, required in _COMPARED_FIELDS if not required
 )
 
 
@@ -166,10 +187,13 @@ def verify(kalshi: KalshiSeries, polymarket: PolymarketMarket) -> Verdict:
     """
     failures: list[Failure] = []
 
-    for field, unverifiable, divergent in _COMPARED_FIELDS:
+    for field, unverifiable, divergent, required in _COMPARED_FIELDS:
         left = normalise_term(getattr(kalshi.terms, field))
         right = normalise_term(getattr(polymarket.terms, field))
-        if left is None or right is None:
+        if left is None and right is None:
+            if required:
+                failures.append(unverifiable)
+        elif left is None or right is None:
             failures.append(unverifiable)
         elif left != right:
             failures.append(divergent)

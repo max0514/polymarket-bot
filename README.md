@@ -45,6 +45,31 @@ python3 -m pytest
 python3 -m mypy
 ```
 
+## Run the collector
+
+The collector proposes real MLB pairs and, once you approve one, collects its
+order books - the verdict clock. It needs your Kalshi API key (websocket auth)
+and a local LLM served by vLLM (term extraction):
+
+```bash
+export KALSHI_API_KEY_ID=your-key-id
+export KALSHI_PRIVATE_KEY_PATH=~/kalshi-private-key.pem
+export ARB_LLM_BASE_URL=http://localhost:8000/v1   # vLLM default
+export ARB_LLM_MODEL=your-served-model-name
+python3 -m arb.shell.collect
+```
+
+Every ~10 minutes it fetches both venues' MLB listings, matches games by
+teams and date, extracts each side's terms independently through the LLM
+(failed extraction fails closed - the pair arrives unverifiable with its
+verbatim rules on the review card), and upserts the queue. Every 30 seconds
+it re-reads the registry, so approving on the dashboard starts websocket
+collection within half a minute. Books flow through the reducer; Decision
+Records land in `data/live_orderbooks/decisions.sqlite`.
+
+Fees are configured to both venues' verified August 2026 schedules (Kalshi
+taker 0.07, Polymarket sports taker 0.05). Execution stays dry-run.
+
 ## The pair review dashboard
 
 Candidate pairs are approved by a person, once per pair, after a deterministic
