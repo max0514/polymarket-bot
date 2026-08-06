@@ -108,6 +108,54 @@ class TestMatching:
         assert len(kalshi_markets) == 82
 
 
+class TestRealGammaDateShapes:
+    def test_event_start_date_is_creation_time_and_must_not_be_trusted(
+        self,
+    ) -> None:
+        """Live gamma (2026-08-06) puts *listing creation* time in the event's
+        `startDate`; first pitch lives on the market as `gameStartTime`, in
+        gamma's own `2026-08-08 02:15:00+00` shape. A matcher that reads the
+        event field dates the game at listing time and pairs nothing - the
+        exact live failure this pins."""
+        kalshi = [
+            {
+                "ticker": "KXMLBGAME-26AUG072215DETSF-DET",
+                "event_ticker": "KXMLBGAME-26AUG072215DETSF",
+                "title": "Detroit vs San Francisco Winner?",
+            },
+            {
+                "ticker": "KXMLBGAME-26AUG072215DETSF-SF",
+                "event_ticker": "KXMLBGAME-26AUG072215DETSF",
+                "title": "Detroit vs San Francisco Winner?",
+            },
+        ]
+        gamma = [
+            {
+                "slug": "mlb-det-sf-2026-08-07",
+                "startDate": "2026-08-01T13:01:31Z",  # listing creation, days early
+                "markets": [
+                    {
+                        "conditionId": "0xdet_sf_real",
+                        "question": "Tigers vs. Giants",
+                        "description": "Resolves to the winner.",
+                        # 02:15 UTC on the 8th is 22:15 ET on the 7th.
+                        "gameStartTime": "2026-08-08 02:15:00+00",
+                        "outcomes": '["Tigers", "Giants"]',
+                        "clobTokenIds": '["33333333333333333333", "44444444444444444444"]',
+                    }
+                ],
+            }
+        ]
+
+        pairings = list(match_games(kalshi, gamma))
+
+        assert {p.kalshi_ticker for p in pairings} == {
+            "KXMLBGAME-26AUG072215DETSF-DET",
+            "KXMLBGAME-26AUG072215DETSF-SF",
+        }
+        assert all(p.game_date == "2026-08-07" for p in pairings)
+
+
 class TestWhatThePairingCarries:
     def test_it_carries_everything_the_proposer_needs(
         self, pairings: list[GamePairing]

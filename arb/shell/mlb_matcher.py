@@ -213,16 +213,25 @@ def _parse_gamma_event(
     if away is None or home is None or away == home:
         return None
 
-    date = _gamma_event_date(event, slug_date="-".join(parts[3:6]))
     markets = event.get("markets") or []
-    if date is None or not markets:
+    if not markets:
+        return None
+    date = _gamma_event_date(event, markets[0], slug_date="-".join(parts[3:6]))
+    if date is None:
         return None
     return (away, home), date, markets[0], slug
 
 
-def _gamma_event_date(event: dict[str, Any], slug_date: str) -> str | None:
-    """Prefer the start time converted to ET; fall back to the slug's date."""
-    raw = event.get("startDate") or event.get("gameStartTime")
+def _gamma_event_date(
+    event: dict[str, Any], market: dict[str, Any], slug_date: str
+) -> str | None:
+    """First pitch converted to ET; fall back to the slug's date.
+
+    Live gamma (2026-08-06) carries first pitch on the *market* as
+    `gameStartTime` ("2026-08-08 02:15:00+00"); the event's `startDate` is
+    when the listing was created, so it must never date the game.
+    """
+    raw = market.get("gameStartTime") or event.get("gameStartTime")
     if raw:
         try:
             started = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
