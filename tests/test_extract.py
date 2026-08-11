@@ -142,6 +142,18 @@ class TestExtraction:
         assert "Los Angeles D" in prompt
         assert llm.requests[0]["model"] == "test-model"
 
+    def test_the_call_requests_json_mode(self, llm: _FakeLLM) -> None:
+        """The first live run (llama3.2 via Ollama, 2026-08-06) lost 25 of 60
+        calls to prose-wrapped replies. OpenAI-compatible endpoints (vLLM,
+        Ollama) accept `response_format json_object`, which constrains
+        decoding to valid JSON - form enforced by the endpoint, content still
+        guarded by the evidence check."""
+        llm.queue_content(good_payload())
+
+        extract_terms(RULES, config(llm))
+
+        assert llm.requests[0]["response_format"] == {"type": "json_object"}
+
     def test_evidence_that_is_not_a_verbatim_quote_nulls_the_field(
         self, llm: _FakeLLM
     ) -> None:

@@ -143,6 +143,9 @@ def _chat(prompt: str, config: ExtractorConfig) -> str | None:
             "model": config.model,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0,
+            # Constrain decoding to valid JSON (vLLM and Ollama both honor
+            # this); the evidence check still guards the content.
+            "response_format": {"type": "json_object"},
         }
     ).encode("utf-8")
     request = urllib.request.Request(
